@@ -1,0 +1,7 @@
+Undefined symbols for architecture arm64:
+  "_CMSampleBufferGetImageBuffer", referenced from:
+      -[CameraManager imageFromSampleBuffer:] in CameraManager-de4601.o
+  "_kCVPixelBufferPixelFormatTypeKey", referenced from:
+      -[CameraManager setupSession] in CameraManager-de4601.o
+ld: symbol(s) not found for architecture arm64
+clang: error: linker command failed with exit code 1 (use -v to see invocation)
