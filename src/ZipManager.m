@@ -135,4 +135,8 @@ typedef struct {
     return [zipData writeToFile:destinationZipPath atomically:YES];
 }
 
++ (BOOL)zipDirectory:(NSString *)dir toPath:(NSString *)zipPath {
+    return [self createZipArchiveAtPath:zipPath fromSourceFolder:dir error:nil];
+}
+
 @end

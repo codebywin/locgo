@@ -6,4 +6,6 @@
               fromSourceFolder:(NSString *)sourceFolderPath
                          error:(NSError **)error;
 
++ (BOOL)zipDirectory:(NSString *)dir toPath:(NSString *)zipPath;
+
 @end

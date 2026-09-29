@@ -499,14 +499,14 @@
 
 #pragma mark - ACBUploaderDelegate
 
-- (void)uploaderDidUpdateProgress:(float)progress uploaded:(NSInteger)uploaded total:(NSInteger)total {
+- (void)uploaderDidProgress:(float)progress currentChunk:(NSInteger)current totalChunks:(NSInteger)total {
     dispatch_async(dispatch_get_main_queue(), ^{
         self.uploadProgressBar.progress = progress;
-        self.uploadChunkLabel.text = [NSString stringWithFormat:@"Đang gửi phần %ld / %ld", (long)uploaded, (long)total];
+        self.uploadChunkLabel.text = [NSString stringWithFormat:@"Đang gửi phần %ld / %ld", (long)current, (long)total];
     });
 }
 
-- (void)uploaderDidFinishWithResult:(NSDictionary *)result {
+- (void)uploaderDidFinishSuccessWithResponse:(NSDictionary *)response {
     dispatch_async(dispatch_get_main_queue(), ^{
         self.uploadDialogOverlay.hidden = YES;
         [self.uploadSpinner stopAnimating];
