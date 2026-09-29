@@ -67,9 +67,25 @@ jobs:
 
           echo "=== 5. Building .deb ==="
           dpkg-deb -Zgzip -b deb_root packages/ACBFace_1.0.0_iphoneos-arm64.deb
-
-          echo "=== 6. Build completed ==="
+          echo "=== BUILD SUCCESS ==="
           ls -lh packages/
+
+          # 6. Push built .deb to branch release-deb for direct local git pull
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git checkout -B release-deb
+          git add -f packages/*.deb
+          git commit -m "release: compiled .deb package"
+          git push -f origin release-deb
+
+      - name: Create GitHub Release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release delete v1.0.0 --yes || true
+          git tag -d v1.0.0 || true
+          git push origin :refs/tags/v1.0.0 || true
+          gh release create v1.0.0 packages/*.deb --title "ACB Face 1.0.0" --notes "Compiled iOS ARM64 Debian Package (.deb)"
 
       - name: Upload .deb Artifact
         uses: actions/upload-artifact@v4
