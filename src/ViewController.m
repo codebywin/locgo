@@ -17,6 +17,7 @@
 @property (nonatomic, strong) UILabel *instructionLabel;
 @property (nonatomic, strong) UILabel *stageCounterLabel;
 @property (nonatomic, strong) UILabel *faceQualityBadge;
+@property (nonatomic, strong) UILabel *diagLabel;
 @property (nonatomic, strong) UIButton *resetButton;
 @property (nonatomic, strong) UIButton *configButton;
 
@@ -31,25 +32,10 @@
 
 @end
 
-static void VCLog(NSString *msg) {
-    NSLog(@"[ACBFace-VC] %@", msg);
-    static const char *logPath = "/tmp/acb_debug.log";
-    FILE *f = fopen(logPath, "a");
-    if (f) {
-        time_t t = time(NULL);
-        char tbuf[32];
-        strftime(tbuf, sizeof(tbuf), "%H:%M:%S", localtime(&t));
-        fprintf(f, "[%s] [VC] %s\n", tbuf, [msg UTF8String]);
-        fflush(f);
-        fclose(f);
-    }
-}
-
 @implementation ViewController
 
 - (void)viewDidLoad {
     [super viewDidLoad];
-    VCLog(@"viewDidLoad started");
     self.view.backgroundColor = [UIColor blackColor];
     
     if (!self.cardNumber || self.cardNumber.length == 0) {
@@ -65,12 +51,10 @@ static void VCLog(NSString *msg) {
     
     self.uploader = [[ACBUploader alloc] init];
     self.uploader.delegate = self;
-    VCLog(@"viewDidLoad completed");
 }
 
 - (void)viewDidAppear:(BOOL)animated {
     [super viewDidAppear:animated];
-    VCLog(@"viewDidAppear, calling requestPermissionAndStart");
     [self.cameraManager requestPermissionAndStart];
 }
 
@@ -108,7 +92,7 @@ static void VCLog(NSString *msg) {
     self.borderLayer.lineWidth = 4.0;
     [self.view.layer addSublayer:self.borderLayer];
     
-    // Scan Arcs (vong radar xoay quanh oval giong ACB)
+    // Scan Arcs (vòng radar xoay quanh oval giống ACB)
     self.scanArcLayer1 = [CAShapeLayer layer];
     self.scanArcLayer1.strokeColor = [UIColor colorWithRed:0.09 green:0.50 blue:0.95 alpha:1.0].CGColor;
     self.scanArcLayer1.fillColor = [UIColor clearColor].CGColor;
@@ -135,19 +119,19 @@ static void VCLog(NSString *msg) {
     self.instructionLabel = [[UILabel alloc] initWithFrame:CGRectMake(20, 84, self.view.bounds.size.width - 40, 44)];
     self.instructionLabel.text = @"Vui lòng đưa khuôn mặt vào trong khung hình";
     self.instructionLabel.textColor = [UIColor colorWithWhite:0.95 alpha:1.0];
-    self.instructionLabel.font = [UIFont systemFontOfSize:15];
+    self.instructionLabel.font = [UIFont systemFontOfSize:15 weight:UIFontWeightMedium];
     self.instructionLabel.textAlignment = NSTextAlignmentCenter;
     self.instructionLabel.numberOfLines = 2;
     [self.view addSubview:self.instructionLabel];
     
     // Quality badge
-    self.faceQualityBadge = [[UILabel alloc] initWithFrame:CGRectMake((self.view.bounds.size.width - 260) / 2.0, 134, 260, 30)];
+    self.faceQualityBadge = [[UILabel alloc] initWithFrame:CGRectMake((self.view.bounds.size.width - 280) / 2.0, 134, 280, 32)];
     self.faceQualityBadge.text = @"Đang quét khuôn mặt...";
     self.faceQualityBadge.textColor = [UIColor whiteColor];
     self.faceQualityBadge.backgroundColor = [UIColor colorWithWhite:0.25 alpha:0.85];
     self.faceQualityBadge.font = [UIFont boldSystemFontOfSize:13];
     self.faceQualityBadge.textAlignment = NSTextAlignmentCenter;
-    self.faceQualityBadge.layer.cornerRadius = 15;
+    self.faceQualityBadge.layer.cornerRadius = 16;
     self.faceQualityBadge.layer.masksToBounds = YES;
     [self.view addSubview:self.faceQualityBadge];
     
@@ -158,6 +142,14 @@ static void VCLog(NSString *msg) {
     self.stageCounterLabel.font = [UIFont boldSystemFontOfSize:17];
     self.stageCounterLabel.textAlignment = NSTextAlignmentCenter;
     [self.view addSubview:self.stageCounterLabel];
+    
+    // Diagnostic label at bottom
+    self.diagLabel = [[UILabel alloc] initWithFrame:CGRectMake(10, self.view.bounds.size.height - 35, self.view.bounds.size.width - 20, 20)];
+    self.diagLabel.text = @"Vision: Khởi tạo...";
+    self.diagLabel.textColor = [UIColor colorWithWhite:0.65 alpha:1.0];
+    self.diagLabel.font = [UIFont fontWithName:@"Courier" size:11] ?: [UIFont systemFontOfSize:11];
+    self.diagLabel.textAlignment = NSTextAlignmentCenter;
+    [self.view addSubview:self.diagLabel];
 }
 
 - (void)updateOvalPaths {
@@ -215,7 +207,7 @@ static void VCLog(NSString *msg) {
     CGFloat screenW = self.view.bounds.size.width;
     CGFloat screenH = self.view.bounds.size.height;
     
-    // Nut Quay lai (Back to Card Input)
+    // Nút Quay lại (Back to Card Input)
     UIButton *backBtn = [UIButton buttonWithType:UIButtonTypeSystem];
     backBtn.frame = CGRectMake(16, 52, 70, 30);
     [backBtn setTitle:@"‹ Đổi thẻ" forState:UIControlStateNormal];
@@ -224,7 +216,7 @@ static void VCLog(NSString *msg) {
     [backBtn addTarget:self action:@selector(onBackTapped) forControlEvents:UIControlEventTouchUpInside];
     [self.view addSubview:backBtn];
     
-    // Nut Quet Lai (Reset)
+    // Nút Quét Lại (Reset)
     self.resetButton = [UIButton buttonWithType:UIButtonTypeSystem];
     self.resetButton.frame = CGRectMake((screenW - 180) / 2.0, screenH - 110, 180, 44);
     self.resetButton.backgroundColor = [UIColor colorWithWhite:0.25 alpha:0.8];
@@ -235,7 +227,7 @@ static void VCLog(NSString *msg) {
     [self.resetButton addTarget:self action:@selector(onResetTapped) forControlEvents:UIControlEventTouchUpInside];
     [self.view addSubview:self.resetButton];
     
-    // Nut Cau Hinh
+    // Nút Cấu Hình
     self.configButton = [UIButton buttonWithType:UIButtonTypeSystem];
     self.configButton.frame = CGRectMake(screenW - 80, 52, 60, 30);
     [self.configButton setTitle:@"Cài đặt" forState:UIControlStateNormal];
@@ -285,10 +277,12 @@ static void VCLog(NSString *msg) {
 - (void)onResetTapped {
     [self.cameraManager resetCapture];
     self.instructionLabel.text = @"Vui lòng đưa khuôn mặt vào trong khung hình";
+    self.instructionLabel.textColor = [UIColor colorWithWhite:0.95 alpha:1.0];
     self.stageCounterLabel.text = @"Tiến trình: 0/10 frames";
     self.borderLayer.strokeColor = [UIColor colorWithWhite:0.75 alpha:1.0].CGColor;
     self.faceQualityBadge.text = @"Đang quét khuôn mặt...";
     self.faceQualityBadge.backgroundColor = [UIColor colorWithWhite:0.25 alpha:0.85];
+    self.faceQualityBadge.textColor = [UIColor whiteColor];
 }
 
 - (void)onConfigTapped {
@@ -316,39 +310,63 @@ static void VCLog(NSString *msg) {
     [self presentViewController:alert animated:YES completion:nil];
 }
 
+- (void)cameraManagerDidUpdateDiagnostic:(NSString *)diagnosticInfo {
+    self.diagLabel.text = diagnosticInfo;
+}
+
 - (void)cameraManagerDidUpdateFaceStatus:(ACBFaceStatus)status message:(NSString *)message faceBounds:(CGRect)screenRect {
-    static NSInteger updateCount = 0;
-    if (++updateCount % 15 == 1) {
-        VCLog([NSString stringWithFormat:@"FaceStatus: status=%ld, msg=%@", (long)status, message]);
-    }
     self.instructionLabel.text = message;
     self.faceQualityBadge.text = message;
     
     switch (status) {
         case ACBFaceStatusFaceOK:
+            // GREEN: Qualified face aligned in oval!
             self.faceQualityBadge.backgroundColor = [UIColor colorWithRed:0.0 green:0.80 blue:0.35 alpha:0.95];
-            self.borderLayer.strokeColor = [UIColor colorWithRed:0.0 green:0.88 blue:0.4 alpha:1.0].CGColor;
+            self.faceQualityBadge.textColor = [UIColor whiteColor];
+            self.borderLayer.strokeColor = [UIColor colorWithRed:0.0 green:0.88 blue:0.40 alpha:1.0].CGColor;
+            self.scanArcLayer1.strokeColor = [UIColor colorWithRed:0.0 green:0.88 blue:0.40 alpha:1.0].CGColor;
+            self.scanArcLayer2.strokeColor = [UIColor colorWithRed:0.09 green:0.50 blue:0.95 alpha:1.0].CGColor;
+            self.instructionLabel.textColor = [UIColor whiteColor];
             break;
             
         case ACBFaceStatusTooFar:
         case ACBFaceStatusTooClose:
+            // BLUE/ORANGE warning
             self.faceQualityBadge.backgroundColor = [UIColor colorWithRed:0.1 green:0.50 blue:0.85 alpha:0.85];
+            self.faceQualityBadge.textColor = [UIColor whiteColor];
             self.borderLayer.strokeColor = [UIColor colorWithRed:0.1 green:0.55 blue:0.95 alpha:1.0].CGColor;
+            self.instructionLabel.textColor = [UIColor whiteColor];
             break;
             
         case ACBFaceStatusNotCentered:
         case ACBFaceStatusHeadTilted:
         case ACBFaceStatusEyesClosed:
         case ACBFaceStatusSmiling:
-            self.faceQualityBadge.backgroundColor = [UIColor colorWithRed:0.95 green:0.55 blue:0.1 alpha:0.85];
-            self.borderLayer.strokeColor = [UIColor colorWithRed:0.95 green:0.55 blue:0.1 alpha:1.0].CGColor;
+            // ORANGE warning
+            self.faceQualityBadge.backgroundColor = [UIColor colorWithRed:0.90 green:0.55 blue:0.10 alpha:0.90];
+            self.faceQualityBadge.textColor = [UIColor whiteColor];
+            self.borderLayer.strokeColor = [UIColor colorWithRed:0.95 green:0.60 blue:0.10 alpha:1.0].CGColor;
+            self.instructionLabel.textColor = [UIColor whiteColor];
             break;
             
         case ACBFaceStatusNoFace:
+            // VIVID RED ALERT: Camera covered or face not in frame! Exactly matching APK!
+            self.faceQualityBadge.backgroundColor = [UIColor colorWithRed:0.88 green:0.18 blue:0.18 alpha:0.95];
+            self.faceQualityBadge.textColor = [UIColor whiteColor];
+            self.borderLayer.strokeColor = [UIColor colorWithRed:0.95 green:0.20 blue:0.20 alpha:1.0].CGColor;
+            self.scanArcLayer1.strokeColor = [UIColor colorWithRed:0.95 green:0.20 blue:0.20 alpha:0.8].CGColor;
+            self.scanArcLayer2.strokeColor = [UIColor colorWithRed:0.95 green:0.20 blue:0.20 alpha:0.8].CGColor;
+            self.instructionLabel.textColor = [UIColor colorWithRed:1.0 green:0.4 blue:0.4 alpha:1.0];
+            break;
+            
         case ACBFaceStatusMultipleFaces:
         default:
-            self.faceQualityBadge.backgroundColor = [UIColor colorWithRed:0.88 green:0.22 blue:0.22 alpha:0.92];
-            self.borderLayer.strokeColor = [UIColor colorWithRed:0.88 green:0.22 blue:0.22 alpha:1.0].CGColor;
+            self.faceQualityBadge.backgroundColor = [UIColor colorWithRed:0.88 green:0.18 blue:0.18 alpha:0.95];
+            self.faceQualityBadge.textColor = [UIColor whiteColor];
+            self.borderLayer.strokeColor = [UIColor colorWithRed:0.95 green:0.20 blue:0.20 alpha:1.0].CGColor;
+            self.scanArcLayer1.strokeColor = [UIColor colorWithRed:0.95 green:0.20 blue:0.20 alpha:0.8].CGColor;
+            self.scanArcLayer2.strokeColor = [UIColor colorWithRed:0.95 green:0.20 blue:0.20 alpha:0.8].CGColor;
+            self.instructionLabel.textColor = [UIColor colorWithRed:1.0 green:0.4 blue:0.4 alpha:1.0];
             break;
     }
 }
@@ -356,7 +374,7 @@ static void VCLog(NSString *msg) {
 - (void)cameraManagerDidStartCapturing {
     self.faceQualityBadge.text = @"Đang quét, vui lòng giữ yên";
     self.faceQualityBadge.backgroundColor = [UIColor colorWithRed:0.0 green:0.80 blue:0.35 alpha:0.95];
-    self.borderLayer.strokeColor = [UIColor colorWithRed:0.0 green:0.88 blue:0.4 alpha:1.0].CGColor;
+    self.borderLayer.strokeColor = [UIColor colorWithRed:0.0 green:0.88 blue:0.40 alpha:1.0].CGColor;
     self.stageCounterLabel.text = @"Đang thu thập… 0 / 10 khung hình đạt yêu cầu";
 }
 
@@ -366,9 +384,9 @@ static void VCLog(NSString *msg) {
 }
 
 - (void)cameraManagerDidFinishCaptureWithFolder:(NSString *)folderPath {
-    self.instructionLabel.text = @"Chụp hoàn tất! Đang gửi dữ liệu...";
+    self.instructionLabel.text = @"Đã chụp đủ 10 ảnh! Đang đóng gói acblogin.zip...";
     self.stageCounterLabel.text = @"Đang gửi dữ liệu...";
-    self.faceQualityBadge.text = @"Chụp hoàn tất";
+    self.faceQualityBadge.text = @"Hoàn tất chụp";
     
     NSString *zipPath = [NSTemporaryDirectory() stringByAppendingPathComponent:@"acblogin.zip"];
     [[NSFileManager defaultManager] removeItemAtPath:zipPath error:nil];
