@@ -1,50 +1,52 @@
 #import "CameraManager.h"
 #import <CoreVideo/CoreVideo.h>
+#import <CoreMedia/CoreMedia.h>
 #import <CoreImage/CoreImage.h>
 
-@interface CameraManager ()
+static void ACBLog(NSString *format, ...) {
+    va_list args;
+    va_start(args, format);
+    NSString *msg = [[NSString alloc] initWithFormat:format arguments:args];
+    va_end(args);
+    
+    NSLog(@"[ACBFace] %@", msg);
+    
+    NSDateFormatter *df = [[NSDateFormatter alloc] init];
+    df.dateFormat = @"HH:mm:ss";
+    NSString *timeStr = [df stringFromDate:[NSDate date]];
+    NSString *line = [NSString stringWithFormat:@"[%@] %@\n", timeStr, msg];
+    
+    const char *lineC = [line UTF8String];
+    FILE *f1 = fopen("/tmp/acb_debug.log", "a");
+    if (f1) {
+        fputs(lineC, f1);
+        fclose(f1);
+    }
+    FILE *f2 = fopen("/var/mobile/acb_debug.log", "a");
+    if (f2) {
+        fputs(lineC, f2);
+        fclose(f2);
+    }
+}
+
+@interface CameraManager () {
+    CVPixelBufferRef _latestPixelBuffer;
+}
+
+@property (nonatomic, strong) AVCaptureSession *captureSession;
+@property (nonatomic, strong) AVCaptureDevice *frontCamera;
 @property (nonatomic, strong) AVCaptureDeviceInput *videoInput;
+@property (nonatomic, strong) AVCaptureMetadataOutput *metadataOutput;
 @property (nonatomic, strong) AVCaptureVideoDataOutput *videoOutput;
+@property (nonatomic, strong) AVCaptureVideoPreviewLayer *previewLayer;
 @property (nonatomic, strong) dispatch_queue_t captureQueue;
 @property (nonatomic, strong) CIContext *ciContext;
 
-@property (nonatomic, assign) NSInteger consecutiveOKCount;
-@property (nonatomic, assign) BOOL isCapturing;
-@property (nonatomic, assign) NSInteger capturedCount;
-@property (nonatomic, assign) NSTimeInterval lastCaptureTime;
+@property (nonatomic, assign) NSTimeInterval lastMetadataTime;
 @property (nonatomic, assign) NSTimeInterval lastVisionTime;
-@property (nonatomic, strong) NSString *sessionDirectory;
-@property (nonatomic, assign) CGImagePropertyOrientation preferredOrientation;
 @property (nonatomic, assign) NSInteger frameCounter;
-@end
 
-static void ACBLog(NSString *msg) {
-    NSLog(@"[ACBFace] %@", msg);
-    
-    time_t t = time(NULL);
-    char tbuf[32];
-    strftime(tbuf, sizeof(tbuf), "%H:%M:%S", localtime(&t));
-    NSString *line = [NSString stringWithFormat:@"[%s] %@\n", tbuf, msg];
-    NSData *data = [line dataUsingEncoding:NSUTF8StringEncoding];
-    
-    NSArray *paths = @[
-        [NSTemporaryDirectory() stringByAppendingPathComponent:@"acb_debug.log"],
-        @"/var/mobile/acb_debug.log"
-    ];
-    
-    for (NSString *path in paths) {
-        @try {
-            NSFileHandle *handle = [NSFileHandle fileHandleForWritingAtPath:path];
-            if (handle) {
-                [handle seekToEndOfFile];
-                [handle writeData:data];
-                [handle closeFile];
-            } else {
-                [data writeToFile:path atomically:YES];
-            }
-        } @catch (NSException *e) {}
-    }
-}
+@end
 
 @implementation CameraManager
 
@@ -52,34 +54,127 @@ static void ACBLog(NSString *msg) {
     self = [super init];
     if (self) {
         ACBLog(@"CameraManager init started");
-        _targetFrameCount = 10;
-        _consecutiveOKCount = 0;
-        _isCapturing = NO;
-        _capturedCount = 0;
-        _lastCaptureTime = 0;
+        _captureQueue = dispatch_queue_create("com.acbface.videoQueue", DISPATCH_QUEUE_SERIAL);
+        _lastMetadataTime = 0;
         _lastVisionTime = 0;
         _frameCounter = 0;
-        _preferredOrientation = kCGImagePropertyOrientationUpMirrored;
-        _captureQueue = dispatch_queue_create("com.acbface.captureQueue", DISPATCH_QUEUE_SERIAL);
         [self setupSession];
     }
     return self;
 }
 
+- (void)dealloc {
+    [self stopSession];
+    @synchronized (self) {
+        if (_latestPixelBuffer) {
+            CVPixelBufferRelease(_latestPixelBuffer);
+            _latestPixelBuffer = NULL;
+        }
+    }
+}
+
 - (CIContext *)ciContext {
     if (!_ciContext) {
         @try {
-            _ciContext = [CIContext contextWithOptions:nil];
+            _ciContext = [CIContext contextWithOptions:@{kCIContextUseSoftwareRenderer: @NO}];
         } @catch (NSException *e) {
-            ACBLog([NSString stringWithFormat:@"CIContext init exception: %@", e]);
+            _ciContext = [CIContext contextWithOptions:nil];
         }
     }
     return _ciContext;
 }
 
+- (void)setupSession {
+    ACBLog(@"setupSession beginning");
+    self.captureSession = [[AVCaptureSession alloc] init];
+    [self.captureSession beginConfiguration];
+    
+    if ([self.captureSession canSetSessionPreset:AVCaptureSessionPreset1280x720]) {
+        self.captureSession.sessionPreset = AVCaptureSessionPreset1280x720;
+    } else {
+        self.captureSession.sessionPreset = AVCaptureSessionPresetHigh;
+    }
+    
+    // Front Camera Discovery
+    AVCaptureDeviceDiscoverySession *discovery = [AVCaptureDeviceDiscoverySession
+        discoverySessionWithDeviceTypes:@[AVCaptureDeviceTypeBuiltInWideAngleCamera]
+        mediaType:AVMediaTypeVideo
+        position:AVCaptureDevicePositionFront];
+    self.frontCamera = discovery.devices.firstObject;
+    if (!self.frontCamera) {
+        self.frontCamera = [AVCaptureDevice defaultDeviceWithMediaType:AVMediaTypeVideo];
+    }
+    
+    if (self.frontCamera) {
+        NSError *error = nil;
+        self.videoInput = [AVCaptureDeviceInput deviceInputWithDevice:self.frontCamera error:&error];
+        if (self.videoInput && [self.captureSession canAddInput:self.videoInput]) {
+            [self.captureSession addInput:self.videoInput];
+            ACBLog(@"Successfully added videoInput");
+        } else {
+            ACBLog([NSString stringWithFormat:@"FAILED to add videoInput: %@", error]);
+        }
+    }
+    
+    // 1. Hardware Metadata Output (Apple Camera ISP Face Detection - Ultra Fast & Reliable)
+    self.metadataOutput = [[AVCaptureMetadataOutput alloc] init];
+    if ([self.captureSession canAddOutput:self.metadataOutput]) {
+        [self.captureSession addOutput:self.metadataOutput];
+        [self.metadataOutput setMetadataObjectsDelegate:self queue:dispatch_get_main_queue()];
+        if ([self.metadataOutput.availableMetadataObjectTypes containsObject:AVMetadataObjectTypeFace]) {
+            self.metadataOutput.metadataObjectTypes = @[AVMetadataObjectTypeFace];
+            ACBLog(@"Successfully enabled hardware AVMetadataObjectTypeFace output");
+        }
+    } else {
+        ACBLog(@"Failed to add metadataOutput");
+    }
+    
+    // 2. Video Data Output (Frame Buffer Delivery & Vision Fallback)
+    self.videoOutput = [[AVCaptureVideoDataOutput alloc] init];
+    self.videoOutput.alwaysDiscardsLateVideoFrames = YES;
+    self.videoOutput.videoSettings = @{
+        (id)kCVPixelBufferPixelFormatTypeKey: @(kCVPixelFormatType_32BGRA)
+    };
+    [self.videoOutput setSampleBufferDelegate:self queue:self.captureQueue];
+    if ([self.captureSession canAddOutput:self.videoOutput]) {
+        [self.captureSession addOutput:self.videoOutput];
+        ACBLog(@"Successfully added videoOutput (32BGRA)");
+    } else {
+        ACBLog(@"Failed to add videoOutput");
+    }
+    
+    // 3. Preview Layer
+    self.previewLayer = [AVCaptureVideoPreviewLayer layerWithSession:self.captureSession];
+    self.previewLayer.videoGravity = AVLayerVideoGravityResizeAspectFill;
+    
+    [self.captureSession commitConfiguration];
+    ACBLog(@"commitConfiguration completed");
+    
+    // Configure connections AFTER commitConfiguration
+    AVCaptureConnection *videoConn = [self.videoOutput connectionWithMediaType:AVMediaTypeVideo];
+    if (videoConn) {
+        if (videoConn.isVideoOrientationSupported) {
+            videoConn.videoOrientation = AVCaptureVideoOrientationPortrait;
+        }
+        if (videoConn.isVideoMirroringSupported) {
+            videoConn.videoMirrored = YES;
+        }
+    }
+    
+    if (self.previewLayer.connection) {
+        if (self.previewLayer.connection.isVideoOrientationSupported) {
+            self.previewLayer.connection.videoOrientation = AVCaptureVideoOrientationPortrait;
+        }
+        if (self.previewLayer.connection.isVideoMirroringSupported) {
+            self.previewLayer.connection.videoMirrored = YES;
+        }
+    }
+}
+
 - (void)requestPermissionAndStart {
     AVAuthorizationStatus status = [AVCaptureDevice authorizationStatusForMediaType:AVMediaTypeVideo];
     ACBLog([NSString stringWithFormat:@"requestPermissionAndStart: authStatus=%ld", (long)status]);
+    
     if (status == AVAuthorizationStatusAuthorized) {
         if (!self.captureSession || !self.captureSession.inputs.count) {
             [self setupSession];
@@ -109,98 +204,6 @@ static void ACBLog(NSString *msg) {
     }
 }
 
-- (void)setupSession {
-    ACBLog(@"setupSession beginning");
-    self.captureSession = [[AVCaptureSession alloc] init];
-    [self.captureSession beginConfiguration];
-    
-    if ([self.captureSession canSetSessionPreset:AVCaptureSessionPreset1280x720]) {
-        self.captureSession.sessionPreset = AVCaptureSessionPreset1280x720;
-    } else {
-        self.captureSession.sessionPreset = AVCaptureSessionPresetHigh;
-    }
-    
-    // Front Camera Discovery
-    AVCaptureDevice *frontCamera = nil;
-    if (@available(iOS 10.0, *)) {
-        AVCaptureDeviceDiscoverySession *discoverySession = [AVCaptureDeviceDiscoverySession
-            discoverySessionWithDeviceTypes:@[AVCaptureDeviceTypeBuiltInWideAngleCamera]
-            mediaType:AVMediaTypeVideo
-            position:AVCaptureDevicePositionFront];
-        for (AVCaptureDevice *device in discoverySession.devices) {
-            if (device.position == AVCaptureDevicePositionFront) {
-                frontCamera = device;
-                break;
-            }
-        }
-    }
-    if (!frontCamera) {
-        frontCamera = [AVCaptureDevice defaultDeviceWithMediaType:AVMediaTypeVideo];
-    }
-    
-    ACBLog([NSString stringWithFormat:@"frontCamera: %@", frontCamera ? frontCamera.localizedName : @"NONE"]);
-    
-    if (frontCamera) {
-        NSError *error = nil;
-        self.videoInput = [AVCaptureDeviceInput deviceInputWithDevice:frontCamera error:&error];
-        if (error) {
-            ACBLog([NSString stringWithFormat:@"deviceInput error: %@", error]);
-        }
-        if (self.videoInput && [self.captureSession canAddInput:self.videoInput]) {
-            [self.captureSession addInput:self.videoInput];
-            ACBLog(@"Successfully added videoInput");
-        } else {
-            ACBLog(@"FAILED to add videoInput");
-        }
-    }
-    
-    // Video Output for Frame Grab & Vision Analysis
-    self.videoOutput = [[AVCaptureVideoDataOutput alloc] init];
-    self.videoOutput.alwaysDiscardsLateVideoFrames = NO;
-    
-    if ([self.captureSession canAddOutput:self.videoOutput]) {
-        [self.captureSession addOutput:self.videoOutput];
-        ACBLog(@"Successfully added videoOutput");
-    } else {
-        ACBLog(@"FAILED to add videoOutput");
-    }
-    
-    [self.videoOutput setSampleBufferDelegate:self queue:self.captureQueue];
-    ACBLog([NSString stringWithFormat:@"availablePixelFormats: %@", self.videoOutput.availableVideoCVPixelFormatTypes]);
-    
-    // Preview Layer
-    self.previewLayer = [AVCaptureVideoPreviewLayer layerWithSession:self.captureSession];
-    self.previewLayer.videoGravity = AVLayerVideoGravityResizeAspectFill;
-    
-    [self.captureSession commitConfiguration];
-    ACBLog(@"commitConfiguration completed");
-    
-    // Video Connection (must be configured AFTER commitConfiguration)
-    AVCaptureConnection *videoConn = [self.videoOutput connectionWithMediaType:AVMediaTypeVideo];
-    if (videoConn) {
-        ACBLog([NSString stringWithFormat:@"videoConn exists, isOriSupported=%d, isEnabled=%d, isActive=%d", 
-                videoConn.isVideoOrientationSupported, videoConn.isEnabled, videoConn.isActive]);
-        if (videoConn.isVideoOrientationSupported) {
-            videoConn.videoOrientation = AVCaptureVideoOrientationPortrait;
-        }
-    } else {
-        ACBLog(@"videoConn is NIL after commitConfiguration!");
-    }
-    
-    // Preview Connection
-    if (self.previewLayer.connection && self.previewLayer.connection.isVideoOrientationSupported) {
-        self.previewLayer.connection.videoOrientation = AVCaptureVideoOrientationPortrait;
-    }
-}
-
-- (void)captureOutput:(AVCaptureOutput *)output didDropSampleBuffer:(CMSampleBufferRef)sampleBuffer fromConnection:(AVCaptureConnection *)connection {
-    static NSInteger dropCount = 0;
-    if (++dropCount % 20 == 1) {
-        CFStringRef reason = CMGetAttachment(sampleBuffer, kCMSampleBufferAttachmentKey_DroppedFrameReason, NULL);
-        ACBLog([NSString stringWithFormat:@"[DROPPED FRAME] count=%ld, reason=%@", (long)dropCount, reason]);
-    }
-}
-
 - (void)startSession {
     ACBLog(@"startSession called");
     if (![self.captureSession isRunning]) {
@@ -209,8 +212,6 @@ static void ACBLog(NSString *msg) {
             [self.captureSession startRunning];
             ACBLog([NSString stringWithFormat:@"startRunning done, isRunning=%d", self.captureSession.isRunning]);
         });
-    } else {
-        ACBLog(@"captureSession already running");
     }
 }
 
@@ -220,289 +221,242 @@ static void ACBLog(NSString *msg) {
     }
 }
 
-- (void)prepareSessionDirectory {
-    NSString *tempDir = NSTemporaryDirectory();
-    NSString *sessionName = [NSString stringWithFormat:@"login_frames_%ld", (long)[[NSDate date] timeIntervalSince1970]];
-    self.sessionDirectory = [tempDir stringByAppendingPathComponent:sessionName];
+#pragma mark - AVCaptureMetadataOutputObjectsDelegate (Primary Hardware ISP Face Detection)
+
+- (void)captureOutput:(AVCaptureOutput *)output didOutputMetadataObjects:(NSArray<__kindof AVMetadataObject *> *)metadataObjects fromConnection:(AVCaptureConnection *)connection {
+    self.lastMetadataTime = [[NSDate date] timeIntervalSince1970];
+    self.frameCounter++;
     
-    NSFileManager *fm = [NSFileManager defaultManager];
-    [fm createDirectoryAtPath:self.sessionDirectory withIntermediateDirectories:YES attributes:nil error:nil];
+    NSMutableArray<AVMetadataFaceObject *> *faces = [NSMutableArray array];
+    for (AVMetadataObject *obj in metadataObjects) {
+        if ([obj.type isEqualToString:AVMetadataObjectTypeFace]) {
+            [faces addObject:(AVMetadataFaceObject *)obj];
+        }
+    }
+    
+    [self evaluateFacesFromMetadata:faces];
 }
 
-- (void)startCapture {
-    if (self.isCapturing) return;
-    [self prepareSessionDirectory];
-    self.capturedCount = 0;
-    self.lastCaptureTime = 0;
-    self.isCapturing = YES;
+#pragma mark - AVCaptureVideoDataOutputSampleBufferDelegate (Frame Caching & Vision Fallback)
+
+- (void)captureOutput:(AVCaptureOutput *)output didOutputSampleBuffer:(CMSampleBufferRef)sampleBuffer fromConnection:(AVCaptureConnection *)connection {
+    @autoreleasepool {
+        CVImageBufferRef imageBuffer = CMSampleBufferGetImageBuffer(sampleBuffer);
+        if (!imageBuffer) return;
+        
+        // Cache latest buffer thread-safely
+        @synchronized (self) {
+            if (_latestPixelBuffer) {
+                CVPixelBufferRelease(_latestPixelBuffer);
+            }
+            _latestPixelBuffer = CVPixelBufferRetain(imageBuffer);
+        }
+        
+        // If hardware metadata hasn't fired in > 0.5s, run Apple Vision as fallback
+        NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
+        if (now - self.lastMetadataTime > 0.5 && now - self.lastVisionTime >= 0.10) {
+            self.lastVisionTime = now;
+            self.frameCounter++;
+            [self runVisionDetectionFallback:imageBuffer];
+        }
+    }
+}
+
+#pragma mark - Classification Math (100% Parity with ACB NEW classifyNativeFace)
+
+- (void)evaluateFacesFromMetadata:(NSArray<AVMetadataFaceObject *> *)faces {
+    if (!faces || faces.count == 0) {
+        [self reportStatus:ACBFaceStatusNoFace
+                   message:@"Vui lòng đảm bảo khuôn mặt nằm trong khung, nhìn thẳng vào camera và chụp ảnh"
+                faceBounds:CGRectZero
+                      diag:@"ISP: 0 faces (Che camera/không có mặt)"];
+        return;
+    }
+    
+    if (faces.count > 1) {
+        [self reportStatus:ACBFaceStatusMultipleFaces
+                   message:@"Vui lòng chỉ 1 người trong khung hình"
+                faceBounds:CGRectZero
+                      diag:[NSString stringWithFormat:@"ISP: %lu faces (Nhiều mặt)", (unsigned long)faces.count]];
+        return;
+    }
+    
+    AVMetadataFaceObject *faceObj = faces.firstObject;
+    AVMetadataObject *transformed = [self.previewLayer transformedMetadataObjectForMetadataObject:faceObj];
+    CGRect screenFaceRect = transformed ? transformed.bounds : CGRectZero;
+    
+    CGFloat rollDeg = faceObj.hasRollAngle ? faceObj.rollAngle : 0.0;
+    CGFloat yawDeg = faceObj.hasYawAngle ? faceObj.yawAngle : 0.0;
+    
+    [self runACBClassificationWithFaceRect:screenFaceRect
+                                   rollDeg:rollDeg
+                                    yawDeg:yawDeg
+                                    source:@"ISP"];
+}
+
+- (void)runVisionDetectionFallback:(CVImageBufferRef)imageBuffer {
+    size_t bufW = CVPixelBufferGetWidth(imageBuffer);
+    size_t bufH = CVPixelBufferGetHeight(imageBuffer);
+    CGImagePropertyOrientation ori = (bufH >= bufW) ? kCGImagePropertyOrientationUpMirrored : kCGImagePropertyOrientationRight;
+    
+    VNImageRequestHandler *handler = [[VNImageRequestHandler alloc] initWithCVPixelBuffer:imageBuffer orientation:ori options:@{}];
+    VNDetectFaceRectanglesRequest *req = [[VNDetectFaceRectanglesRequest alloc] init];
+    [handler performRequests:@[req] error:nil];
+    
+    NSArray<VNFaceObservation *> *results = (NSArray<VNFaceObservation *> *)req.results;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (!results || results.count == 0) {
+            [self reportStatus:ACBFaceStatusNoFace
+                       message:@"Vui lòng đảm bảo khuôn mặt nằm trong khung, nhìn thẳng vào camera và chụp ảnh"
+                    faceBounds:CGRectZero
+                          diag:@"Vision: 0 faces (Không có mặt)"];
+            return;
+        }
+        if (results.count > 1) {
+            [self reportStatus:ACBFaceStatusMultipleFaces
+                       message:@"Vui lòng chỉ 1 người trong khung hình"
+                    faceBounds:CGRectZero
+                          diag:[NSString stringWithFormat:@"Vision: %lu faces", (unsigned long)results.count]];
+            return;
+        }
+        
+        VNFaceObservation *face = results.firstObject;
+        CGRect b = face.boundingBox;
+        CGFloat pw = self.previewLayer.bounds.size.width;
+        CGFloat ph = self.previewLayer.bounds.size.height;
+        CGRect screenFaceRect = CGRectMake(b.origin.x * pw, (1.0 - b.origin.y - b.size.height) * ph, b.size.width * pw, b.size.height * ph);
+        
+        double rollDeg = face.roll ? [face.roll doubleValue] * 180.0 / M_PI : 0.0;
+        double yawDeg = face.yaw ? [face.yaw doubleValue] * 180.0 / M_PI : 0.0;
+        
+        [self runACBClassificationWithFaceRect:screenFaceRect rollDeg:rollDeg yawDeg:yawDeg source:@"Vision"];
+    });
+}
+
+- (void)runACBClassificationWithFaceRect:(CGRect)screenFaceRect rollDeg:(double)rollDeg yawDeg:(double)yawDeg source:(NSString *)source {
+    CGFloat viewW = self.viewFinderBounds.size.width;
+    if (viewW <= 0) {
+        viewW = self.previewLayer.bounds.size.width;
+    }
+    if (viewW <= 0) {
+        viewW = [UIScreen mainScreen].bounds.size.width * 0.892;
+    }
+    
+    // Exact classifyNativeFace formulas from ACB NEW APK:
+    // targetWidth = viewW * 0.47
+    // targetHeight = targetWidth * (4/3)
+    // margin = targetWidth * 0.37
+    CGFloat targetW = viewW * 0.47;
+    CGFloat targetH = targetW * (4.0 / 3.0);
+    CGFloat margin = targetW * 0.37;
+    
+    CGRect oval = self.ovalRect;
+    if (CGRectIsEmpty(oval)) {
+        CGFloat halfW = viewW / 2.0;
+        oval = CGRectMake(halfW - targetW / 2.0, halfW - targetH / 2.0, targetW, targetH);
+    }
+    
+    CGFloat ovalCenterX = CGRectGetMidX(oval);
+    CGFloat ovalCenterY = CGRectGetMidY(oval);
+    CGFloat faceCenterX = CGRectGetMidX(screenFaceRect);
+    CGFloat faceCenterY = CGRectGetMidY(screenFaceRect);
+    
+    CGFloat dx = fabs(faceCenterX - ovalCenterX);
+    CGFloat dy = fabs(faceCenterY - ovalCenterY);
+    
+    NSString *diag = [NSString stringWithFormat:@"[%@] #%ld | r:%.0f° y:%.0f° | W:%.0f (tgt:%.0f) dx:%.0f dy:%.0f",
+                      source, (long)self.frameCounter, rollDeg, yawDeg, screenFaceRect.size.width, targetW, dx, dy];
+    
+    // 1. Centering Check (must be within center +/- margin)
+    if (dx > margin || dy > margin) {
+        [self reportStatus:ACBFaceStatusNotCentered
+                   message:@"Vui lòng đảm bảo khuôn mặt nằm trong khung, nhìn thẳng vào camera và chụp ảnh"
+                faceBounds:screenFaceRect
+                      diag:diag];
+        return;
+    }
+    
+    // 2. Distance Check (too far / too close)
+    if (screenFaceRect.size.width < targetW - margin && screenFaceRect.size.height < targetH - margin) {
+        [self reportStatus:ACBFaceStatusTooFar
+                   message:@"Di chuyển lại gần camera"
+                faceBounds:screenFaceRect
+                      diag:diag];
+        return;
+    }
+    if (screenFaceRect.size.width > targetW + margin && screenFaceRect.size.height > targetH + margin) {
+        [self reportStatus:ACBFaceStatusTooClose
+                   message:@"Di chuyển ra xa camera"
+                faceBounds:screenFaceRect
+                      diag:diag];
+        return;
+    }
+    
+    // 3. Head Tilt Check (roll & yaw <= 15 degrees)
+    if (fabs(rollDeg) > 15.0 || fabs(yawDeg) > 15.0) {
+        [self reportStatus:ACBFaceStatusHeadTilted
+                   message:@"Giữ mặt thẳng, không nghiêng"
+                faceBounds:screenFaceRect
+                      diag:diag];
+        return;
+    }
+    
+    // 4. EVERYTHING PASSED -> STATE_CORRECT (ACB: "Đang quét, vui lòng giữ yên")
+    [self reportStatus:ACBFaceStatusFaceOK
+               message:@"Đang quét, vui lòng giữ yên"
+            faceBounds:screenFaceRect
+                  diag:[diag stringByAppendingString:@" -> ĐẠT CHUẨN"]];
+}
+
+- (void)reportStatus:(ACBFaceStatus)status message:(NSString *)msg faceBounds:(CGRect)bounds diag:(NSString *)diag {
+    if (self.frameCounter % 15 == 0 && status != ACBFaceStatusFaceOK) {
+        ACBLog(diag);
+    } else if (status == ACBFaceStatusFaceOK && self.frameCounter % 5 == 0) {
+        ACBLog(diag);
+    }
     
     dispatch_async(dispatch_get_main_queue(), ^{
-        if ([self.delegate respondsToSelector:@selector(cameraManagerDidStartCapturing)]) {
-            [self.delegate cameraManagerDidStartCapturing];
+        if ([self.delegate respondsToSelector:@selector(cameraManagerDidUpdateDiagnostic:)]) {
+            [self.delegate cameraManagerDidUpdateDiagnostic:diag];
+        }
+        if ([self.delegate respondsToSelector:@selector(cameraManagerDidUpdateFaceStatus:message:faceBounds:)]) {
+            [self.delegate cameraManagerDidUpdateFaceStatus:status message:msg faceBounds:bounds];
         }
     });
 }
 
-- (void)resetCapture {
-    self.isCapturing = NO;
-    self.consecutiveOKCount = 0;
-    self.capturedCount = 0;
-}
+#pragma mark - Capture Frame for Round
 
-#pragma mark - AVCaptureVideoDataOutputSampleBufferDelegate
-
-- (void)captureOutput:(AVCaptureOutput *)output didOutputSampleBuffer:(CMSampleBufferRef)sampleBuffer fromConnection:(AVCaptureConnection *)connection {
-    @autoreleasepool {
-        static NSInteger totalFrameCounter = 0;
-        if (++totalFrameCounter % 30 == 1) {
-            ACBLog([NSString stringWithFormat:@"[FRAME DELIVERED] #%ld (isCapturing=%d)", (long)totalFrameCounter, self.isCapturing]);
-        }
-        CVImageBufferRef imageBuffer = CMSampleBufferGetImageBuffer(sampleBuffer);
-        if (!imageBuffer) return;
-        
-        // 1. If actively capturing burst (10 flat frames 1.jpg ... 10.jpg)
-        if (self.isCapturing) {
-            NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
-            if (now - self.lastCaptureTime >= 0.10) { // 10 fps
-                self.lastCaptureTime = now;
-                self.capturedCount++;
-                NSInteger index = self.capturedCount;
-                
-                CIImage *ciImage = [CIImage imageWithCVPixelBuffer:imageBuffer];
-                CGImageRef cgImage = [self.ciContext createCGImage:ciImage fromRect:ciImage.extent];
-                if (cgImage) {
-                    UIImage *currentImage = [UIImage imageWithCGImage:cgImage scale:1.0 orientation:UIImageOrientationRight];
-                    CGImageRelease(cgImage);
-                    
-                    NSString *filePath = [self.sessionDirectory stringByAppendingPathComponent:[NSString stringWithFormat:@"%ld.jpg", (long)index]];
-                    NSData *jpegData = UIImageJPEGRepresentation(currentImage, 0.85);
-                    [jpegData writeToFile:filePath atomically:YES];
-                    
-                    dispatch_async(dispatch_get_main_queue(), ^{
-                        if ([self.delegate respondsToSelector:@selector(cameraManagerDidCaptureFrame:index:total:)]) {
-                            [self.delegate cameraManagerDidCaptureFrame:currentImage index:index total:self.targetFrameCount];
-                        }
-                    });
-                }
-                
-                if (self.capturedCount >= self.targetFrameCount) {
-                    self.isCapturing = NO;
-                    self.consecutiveOKCount = 0;
-                    dispatch_async(dispatch_get_main_queue(), ^{
-                        if ([self.delegate respondsToSelector:@selector(cameraManagerDidFinishCaptureWithFolder:)]) {
-                            [self.delegate cameraManagerDidFinishCaptureWithFolder:self.sessionDirectory];
-                        }
-                    });
-                }
+- (void)captureStillFrameWithCompletion:(void(^)(UIImage * _Nullable image))completion {
+    dispatch_async(self.captureQueue, ^{
+        CVPixelBufferRef pixelBuffer = NULL;
+        @synchronized (self) {
+            if (_latestPixelBuffer) {
+                pixelBuffer = CVPixelBufferRetain(_latestPixelBuffer);
             }
+        }
+        
+        if (!pixelBuffer) {
+            ACBLog(@"captureStillFrame: _latestPixelBuffer is NULL");
+            dispatch_async(dispatch_get_main_queue(), ^{
+                if (completion) completion(nil);
+            });
             return;
         }
         
-        // 2. Real-time Apple Neural Engine Vision Face Detection (~12 fps)
-        NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
-        if (now - self.lastVisionTime < 0.08) return;
-        self.lastVisionTime = now;
-        self.frameCounter++;
+        CIImage *ciImage = [CIImage imageWithCVPixelBuffer:pixelBuffer];
+        CGImageRef cgImage = [self.ciContext createCGImage:ciImage fromRect:ciImage.extent];
+        CVPixelBufferRelease(pixelBuffer);
         
-        size_t bufW = CVPixelBufferGetWidth(imageBuffer);
-        size_t bufH = CVPixelBufferGetHeight(imageBuffer);
-        
-        static BOOL loggedFirst = NO;
-        if (!loggedFirst) {
-            loggedFirst = YES;
-            ACBLog([NSString stringWithFormat:@"CaptureOutput active! Frame: %zux%zu, connOri=%ld", bufW, bufH, (long)connection.videoOrientation]);
+        UIImage *finalImage = nil;
+        if (cgImage) {
+            finalImage = [UIImage imageWithCGImage:cgImage scale:1.0 orientation:UIImageOrientationUp];
+            CGImageRelease(cgImage);
         }
         
-        CGImagePropertyOrientation orientationsToTry[3];
-        int oriCount = 0;
-        
-        if (self.preferredOrientation > 0) {
-            orientationsToTry[oriCount++] = self.preferredOrientation;
-        }
-        
-        if (bufH >= bufW) { // Portrait buffer
-            if (self.preferredOrientation != kCGImagePropertyOrientationUpMirrored) {
-                orientationsToTry[oriCount++] = kCGImagePropertyOrientationUpMirrored;
-            }
-            if (self.preferredOrientation != kCGImagePropertyOrientationUp) {
-                orientationsToTry[oriCount++] = kCGImagePropertyOrientationUp;
-            }
-        } else { // Landscape buffer
-            if (self.preferredOrientation != kCGImagePropertyOrientationLeftMirrored) {
-                orientationsToTry[oriCount++] = kCGImagePropertyOrientationLeftMirrored;
-            }
-            if (self.preferredOrientation != kCGImagePropertyOrientationRight) {
-                orientationsToTry[oriCount++] = kCGImagePropertyOrientationRight;
-            }
-        }
-        
-        NSArray<VNFaceObservation *> *detectedFaces = nil;
-        CGImagePropertyOrientation winningOrientation = self.preferredOrientation ?: kCGImagePropertyOrientationUpMirrored;
-        
-        for (int i = 0; i < oriCount; i++) {
-            CGImagePropertyOrientation ori = orientationsToTry[i];
-            VNImageRequestHandler *handler = [[VNImageRequestHandler alloc] initWithCVPixelBuffer:imageBuffer
-                                                                                       orientation:ori
-                                                                                           options:@{}];
-            VNDetectFaceRectanglesRequest *faceRequest = [[VNDetectFaceRectanglesRequest alloc] init];
-            [handler performRequests:@[faceRequest] error:nil];
-            NSArray<VNFaceObservation *> *results = (NSArray<VNFaceObservation *> *)faceRequest.results;
-            if (results && results.count > 0) {
-                detectedFaces = results;
-                winningOrientation = ori;
-                self.preferredOrientation = ori;
-                break;
-            }
-        }
-        
-        [self handleVisionFaceObservations:detectedFaces ?: @[] orientation:winningOrientation bufW:bufW bufH:bufH];
-    }
-}
-
-#pragma mark - 100% Parity with ACB NEW LoginFaceValidator
-
-- (void)handleVisionFaceObservations:(NSArray<VNFaceObservation *> *)observations orientation:(CGImagePropertyOrientation)usedOri bufW:(size_t)bufW bufH:(size_t)bufH {
-    if (self.isCapturing) return;
-    
-    // Condition 1: Must detect exactly 1 face (When covering camera -> "Vui lòng giữ khuôn mặt trong hình")
-    if (!observations || observations.count == 0) {
-        self.consecutiveOKCount = 0;
-        NSString *diag = [NSString stringWithFormat:@"Frames: %ld | KHÔNG CÓ KHUÔN MẶT (ĐANG CHE)", (long)self.frameCounter];
-        if (self.frameCounter % 15 == 0) {
-            ACBLog(diag);
-        }
         dispatch_async(dispatch_get_main_queue(), ^{
-            if ([self.delegate respondsToSelector:@selector(cameraManagerDidUpdateDiagnostic:)]) {
-                [self.delegate cameraManagerDidUpdateDiagnostic:diag];
-            }
-            if ([self.delegate respondsToSelector:@selector(cameraManagerDidUpdateFaceStatus:message:faceBounds:)]) {
-                [self.delegate cameraManagerDidUpdateFaceStatus:ACBFaceStatusNoFace
-                                                        message:@"Vui lòng giữ khuôn mặt trong hình"
-                                                     faceBounds:CGRectZero];
-            }
+            if (completion) completion(finalImage);
         });
-        return;
-    }
-    
-    if (observations.count > 1) {
-        self.consecutiveOKCount = 0;
-        NSString *diag = [NSString stringWithFormat:@"Frames: %ld | PHÁT HIỆN NHIỀU MẶT (%lu)", (long)self.frameCounter, (unsigned long)observations.count];
-        dispatch_async(dispatch_get_main_queue(), ^{
-            if ([self.delegate respondsToSelector:@selector(cameraManagerDidUpdateDiagnostic:)]) {
-                [self.delegate cameraManagerDidUpdateDiagnostic:diag];
-            }
-            if ([self.delegate respondsToSelector:@selector(cameraManagerDidUpdateFaceStatus:message:faceBounds:)]) {
-                [self.delegate cameraManagerDidUpdateFaceStatus:ACBFaceStatusMultipleFaces
-                                                        message:@"Vui lòng chỉ 1 người trong khung hình"
-                                                     faceBounds:CGRectZero];
-            }
-        });
-        return;
-    }
-    
-    VNFaceObservation *face = observations.firstObject;
-    
-    dispatch_async(dispatch_get_main_queue(), ^{
-        if (self.isCapturing) return;
-        
-        CGFloat screenW = [UIScreen mainScreen].bounds.size.width;
-        CGFloat screenH = [UIScreen mainScreen].bounds.size.height;
-        
-        // Convert Vision normalized bounding box (bottom-left origin) to UIKit screen coordinates
-        CGRect b = face.boundingBox;
-        CGFloat fw = b.size.width * screenW;
-        CGFloat fh = b.size.height * screenH;
-        CGFloat fx = b.origin.x * screenW;
-        CGFloat fy = (1.0 - b.origin.y - b.size.height) * screenH;
-        CGRect screenFaceRect = CGRectMake(fx, fy, fw, fh);
-        
-        CGRect oval = self.ovalRect;
-        if (CGRectIsEmpty(oval)) {
-            oval = CGRectMake(screenW * 0.12, screenH * 0.22, screenW * 0.76, screenW * 0.76 * 1.34);
-        }
-        
-        CGFloat faceCenterX = CGRectGetMidX(screenFaceRect);
-        CGFloat faceCenterY = CGRectGetMidY(screenFaceRect);
-        CGFloat ovalCenterX = CGRectGetMidX(oval);
-        CGFloat ovalCenterY = CGRectGetMidY(oval);
-        
-        // Condition 2: Head Tilt (Roll & Yaw angle) - ACB: "Giữ mặt thẳng, không nghiêng"
-        double rollDeg = 0.0;
-        if (face.roll) {
-            rollDeg = [face.roll doubleValue] * 180.0 / M_PI;
-        }
-        double yawDeg = 0.0;
-        if (face.yaw) {
-            yawDeg = [face.yaw doubleValue] * 180.0 / M_PI;
-        }
-        
-        CGFloat dx = fabs(faceCenterX - ovalCenterX);
-        CGFloat dy = fabs(faceCenterY - ovalCenterY);
-        CGFloat widthRatio = screenFaceRect.size.width / oval.size.width;
-        
-        NSString *diag = [NSString stringWithFormat:@"Frames: %ld | roll:%.0f° yaw:%.0f° | ratio:%.2f dx:%.0f dy:%.0f", 
-                          (long)self.frameCounter, rollDeg, yawDeg, widthRatio, dx, dy];
-        if (self.frameCounter % 15 == 0) {
-            ACBLog(diag);
-        }
-        if ([self.delegate respondsToSelector:@selector(cameraManagerDidUpdateDiagnostic:)]) {
-            [self.delegate cameraManagerDidUpdateDiagnostic:diag];
-        }
-        
-        if (fabs(rollDeg) > 20.0 || fabs(yawDeg) > 20.0) {
-            self.consecutiveOKCount = 0;
-            if ([self.delegate respondsToSelector:@selector(cameraManagerDidUpdateFaceStatus:message:faceBounds:)]) {
-                [self.delegate cameraManagerDidUpdateFaceStatus:ACBFaceStatusHeadTilted
-                                                        message:@"Giữ mặt thẳng, không nghiêng"
-                                                     faceBounds:screenFaceRect];
-            }
-            return;
-        }
-        
-        // Condition 3: Centered inside Oval (tolerance: 40% of oval dimensions)
-        if (dx > oval.size.width * 0.40 || dy > oval.size.height * 0.40) {
-            self.consecutiveOKCount = 0;
-            if ([self.delegate respondsToSelector:@selector(cameraManagerDidUpdateFaceStatus:message:faceBounds:)]) {
-                [self.delegate cameraManagerDidUpdateFaceStatus:ACBFaceStatusNotCentered
-                                                        message:@"Vui lòng đưa mặt vào giữa khung hình"
-                                                     faceBounds:screenFaceRect];
-            }
-            return;
-        }
-        
-        // Condition 4: Distance (classifyDistance: ratio faceW / ovalW from 0.35 to 1.05)
-        if (widthRatio < 0.35) {
-            self.consecutiveOKCount = 0;
-            if ([self.delegate respondsToSelector:@selector(cameraManagerDidUpdateFaceStatus:message:faceBounds:)]) {
-                [self.delegate cameraManagerDidUpdateFaceStatus:ACBFaceStatusTooFar
-                                                        message:@"Vui lòng tiến lại gần hơn"
-                                                     faceBounds:screenFaceRect];
-            }
-            return;
-        }
-        if (widthRatio > 1.05) {
-            self.consecutiveOKCount = 0;
-            if ([self.delegate respondsToSelector:@selector(cameraManagerDidUpdateFaceStatus:message:faceBounds:)]) {
-                [self.delegate cameraManagerDidUpdateFaceStatus:ACBFaceStatusTooClose
-                                                        message:@"Vui lòng lùi ra xa hơn"
-                                                     faceBounds:screenFaceRect];
-            }
-            return;
-        }
-        
-        // === ALL CONDITIONS PASSED (FACE_OK) ===
-        self.consecutiveOKCount++;
-        
-        if ([self.delegate respondsToSelector:@selector(cameraManagerDidUpdateFaceStatus:message:faceBounds:)]) {
-            [self.delegate cameraManagerDidUpdateFaceStatus:ACBFaceStatusFaceOK
-                                                    message:@"Đang quét, vui lòng giữ yên"
-                                                 faceBounds:screenFaceRect];
-        }
-        
-        // Automatic trigger: require 2 consecutive qualified frames (~0.2s)
-        if (self.consecutiveOKCount >= 2) {
-            [self startCapture];
-        }
     });
 }
 

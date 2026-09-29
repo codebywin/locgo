@@ -20,13 +20,9 @@ xcrun -sdk iphoneos clang -arch arm64 \
     -framework CoreGraphics \
     -framework CoreImage \
     -framework QuartzCore \
+    -framework Vision \
     -lz \
-    src/main.m \
-    src/AppDelegate.m \
-    src/ViewController.m \
-    src/CameraManager.m \
-    src/ZipManager.m \
-    src/ACBUploader.m \
+    src/*.m \
     -o ACBFace
 
 echo "Code signing with entitlements..."

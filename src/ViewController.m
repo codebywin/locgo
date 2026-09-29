@@ -1,32 +1,52 @@
 #import "ViewController.h"
+#import "LoginFaceOverlayView.h"
 #import "ZipManager.h"
+#import <AudioToolbox/AudioToolbox.h>
 
 @interface ViewController ()
+
 @property (nonatomic, strong) CameraManager *cameraManager;
 @property (nonatomic, strong) ACBUploader *uploader;
 
 // UI Elements
-@property (nonatomic, strong) UIView *cameraContainerView;
-@property (nonatomic, strong) UIView *overlayView;
-@property (nonatomic, strong) CAShapeLayer *maskLayer;
-@property (nonatomic, strong) CAShapeLayer *borderLayer;
-@property (nonatomic, strong) CAShapeLayer *scanArcLayer1;
-@property (nonatomic, strong) CAShapeLayer *scanArcLayer2;
-
+@property (nonatomic, strong) UIButton *backButton;
 @property (nonatomic, strong) UILabel *titleLabel;
-@property (nonatomic, strong) UILabel *instructionLabel;
-@property (nonatomic, strong) UILabel *stageCounterLabel;
-@property (nonatomic, strong) UILabel *faceQualityBadge;
+@property (nonatomic, strong) UILabel *progressLabel;
+
+@property (nonatomic, strong) UIView *viewFinderContainer;
+@property (nonatomic, strong) UIView *cameraPreviewView;
+@property (nonatomic, strong) LoginFaceOverlayView *overlayView;
+@property (nonatomic, strong) UIView *flashView;
+
+// Transition Prompt Overlay
+@property (nonatomic, strong) UIView *promptBox;
+@property (nonatomic, strong) UILabel *promptTextLabel;
+@property (nonatomic, strong) UILabel *promptCountdownLabel;
+@property (nonatomic, strong) NSTimer *countdownTimer;
+@property (nonatomic, assign) NSInteger countdownSeconds;
+
+// Bottom Controls
+@property (nonatomic, strong) UILabel *guideLabel;
+@property (nonatomic, strong) UIButton *shutterButton;
 @property (nonatomic, strong) UILabel *diagLabel;
-@property (nonatomic, strong) UIButton *resetButton;
-@property (nonatomic, strong) UIButton *configButton;
 
-// Upload UI
-@property (nonatomic, strong) UIView *uploadDialog;
-@property (nonatomic, strong) UIProgressView *progressBar;
-@property (nonatomic, strong) UILabel *uploadStatusLabel;
+// Upload UI Dialog
+@property (nonatomic, strong) UIView *uploadDialogOverlay;
+@property (nonatomic, strong) UIView *uploadDialogCard;
+@property (nonatomic, strong) UIActivityIndicatorView *uploadSpinner;
+@property (nonatomic, strong) UILabel *uploadTitleLabel;
+@property (nonatomic, strong) UILabel *uploadSubtitleLabel;
+@property (nonatomic, strong) UIProgressView *uploadProgressBar;
+@property (nonatomic, strong) UILabel *uploadChunkLabel;
 
-// Configs
+// Flow State
+@property (nonatomic, assign) NSInteger currentRound;
+@property (nonatomic, assign) NSInteger totalRounds;
+@property (nonatomic, assign) NSInteger consecutiveOKCount;
+@property (nonatomic, assign) BOOL isCapturingRound;
+@property (nonatomic, assign) BOOL isTransitioningRound;
+@property (nonatomic, strong) NSString *sessionDirectory;
+
 @property (nonatomic, strong) NSString *userName;
 @property (nonatomic, strong) NSString *bankType;
 
@@ -36,7 +56,7 @@
 
 - (void)viewDidLoad {
     [super viewDidLoad];
-    self.view.backgroundColor = [UIColor blackColor];
+    self.view.backgroundColor = [UIColor whiteColor];
     
     if (!self.cardNumber || self.cardNumber.length == 0) {
         self.cardNumber = @"18601771";
@@ -44,9 +64,17 @@
     self.userName = @"NGUYEN VAN A";
     self.bankType = @"ACB";
     
-    [self setupCamera];
-    [self setupOverlayUI];
-    [self setupControls];
+    self.totalRounds = 10;
+    self.currentRound = 1;
+    self.consecutiveOKCount = 0;
+    self.isCapturingRound = NO;
+    self.isTransitioningRound = NO;
+    
+    [self prepareNewSessionDirectory];
+    
+    [self setupHeaderUI];
+    [self setupViewFinder];
+    [self setupBottomControls];
     [self setupUploadDialog];
     
     self.uploader = [[ACBUploader alloc] init];
@@ -58,213 +86,231 @@
     [self.cameraManager requestPermissionAndStart];
 }
 
-- (void)viewDidLayoutSubviews {
-    [super viewDidLayoutSubviews];
-    self.cameraManager.previewLayer.frame = self.view.bounds;
-    [self updateOvalPaths];
-    [self startScanArcsAnimation];
+- (void)viewWillDisappear:(BOOL)animated {
+    [super viewWillDisappear:animated];
+    [self.cameraManager stopSession];
 }
 
-- (void)setupCamera {
-    self.cameraContainerView = [[UIView alloc] initWithFrame:self.view.bounds];
-    [self.view addSubview:self.cameraContainerView];
+- (void)prepareNewSessionDirectory {
+    NSString *tempDir = NSTemporaryDirectory();
+    NSString *sessionName = [NSString stringWithFormat:@"login_frames_%ld", (long)[[NSDate date] timeIntervalSince1970]];
+    self.sessionDirectory = [tempDir stringByAppendingPathComponent:sessionName];
     
-    self.cameraManager = [[CameraManager alloc] init];
-    self.cameraManager.delegate = self;
-    [self.cameraContainerView.layer addSublayer:self.cameraManager.previewLayer];
+    [[NSFileManager defaultManager] createDirectoryAtPath:self.sessionDirectory
+                              withIntermediateDirectories:YES
+                                               attributes:nil
+                                                    error:nil];
 }
 
-- (void)setupOverlayUI {
-    self.overlayView = [[UIView alloc] initWithFrame:self.view.bounds];
-    self.overlayView.backgroundColor = [UIColor colorWithWhite:0.0 alpha:0.60];
-    self.overlayView.userInteractionEnabled = NO;
-    [self.view addSubview:self.overlayView];
+#pragma mark - UI Setup (100% Parity with ACB NEW APK)
+
+- (void)setupHeaderUI {
+    CGFloat safeTop = 44.0;
+    if (@available(iOS 11.0, *)) {
+        UIWindow *window = [UIApplication sharedApplication].windows.firstObject;
+        if (window && window.safeAreaInsets.top > 0) {
+            safeTop = window.safeAreaInsets.top;
+        }
+    }
     
-    // Mask layer
-    self.maskLayer = [CAShapeLayer layer];
-    self.maskLayer.fillRule = kCAFillRuleEvenOdd;
-    self.overlayView.layer.mask = self.maskLayer;
+    // 1. Back button "‹ Đổi thẻ"
+    self.backButton = [UIButton buttonWithType:UIButtonTypeSystem];
+    self.backButton.frame = CGRectMake(16, safeTop + 6, 85, 34);
+    [self.backButton setTitle:@"‹ Đổi thẻ" forState:UIControlStateNormal];
+    [self.backButton setTitleColor:[UIColor colorWithWhite:0.25 alpha:1.0] forState:UIControlStateNormal];
+    self.backButton.titleLabel.font = [UIFont systemFontOfSize:16 weight:UIFontWeightMedium];
+    [self.backButton addTarget:self action:@selector(onBackTapped) forControlEvents:UIControlEventTouchUpInside];
+    [self.view addSubview:self.backButton];
     
-    // Border layer
-    self.borderLayer = [CAShapeLayer layer];
-    self.borderLayer.strokeColor = [UIColor colorWithWhite:0.75 alpha:1.0].CGColor;
-    self.borderLayer.fillColor = [UIColor clearColor].CGColor;
-    self.borderLayer.lineWidth = 4.0;
-    [self.view.layer addSublayer:self.borderLayer];
-    
-    // Scan Arcs (vòng radar xoay quanh oval giống ACB)
-    self.scanArcLayer1 = [CAShapeLayer layer];
-    self.scanArcLayer1.strokeColor = [UIColor colorWithRed:0.09 green:0.50 blue:0.95 alpha:1.0].CGColor;
-    self.scanArcLayer1.fillColor = [UIColor clearColor].CGColor;
-    self.scanArcLayer1.lineWidth = 5.0;
-    self.scanArcLayer1.lineCap = kCALineCapRound;
-    [self.view.layer addSublayer:self.scanArcLayer1];
-    
-    self.scanArcLayer2 = [CAShapeLayer layer];
-    self.scanArcLayer2.strokeColor = [UIColor colorWithRed:0.1 green:0.85 blue:0.4 alpha:1.0].CGColor;
-    self.scanArcLayer2.fillColor = [UIColor clearColor].CGColor;
-    self.scanArcLayer2.lineWidth = 5.0;
-    self.scanArcLayer2.lineCap = kCALineCapRound;
-    [self.view.layer addSublayer:self.scanArcLayer2];
-    
-    // Title
-    self.titleLabel = [[UILabel alloc] initWithFrame:CGRectMake(20, 52, self.view.bounds.size.width - 40, 28)];
-    self.titleLabel.text = @"Xác thực khuôn mặt Đăng nhập";
-    self.titleLabel.textColor = [UIColor whiteColor];
-    self.titleLabel.font = [UIFont boldSystemFontOfSize:19];
+    // 2. Title "Chụp ảnh khuôn mặt" (ACB NEW: acb_take_photo_title)
+    CGFloat screenW = [UIScreen mainScreen].bounds.size.width;
+    self.titleLabel = [[UILabel alloc] initWithFrame:CGRectMake(0, safeTop + 36, screenW, 28)];
+    self.titleLabel.text = @"Chụp ảnh khuôn mặt";
+    self.titleLabel.font = [UIFont boldSystemFontOfSize:21];
+    self.titleLabel.textColor = [UIColor blackColor];
     self.titleLabel.textAlignment = NSTextAlignmentCenter;
     [self.view addSubview:self.titleLabel];
     
-    // Instruction label
-    self.instructionLabel = [[UILabel alloc] initWithFrame:CGRectMake(20, 84, self.view.bounds.size.width - 40, 44)];
-    self.instructionLabel.text = @"Vui lòng đưa khuôn mặt vào trong khung hình";
-    self.instructionLabel.textColor = [UIColor colorWithWhite:0.95 alpha:1.0];
-    self.instructionLabel.font = [UIFont systemFontOfSize:15 weight:UIFontWeightMedium];
-    self.instructionLabel.textAlignment = NSTextAlignmentCenter;
-    self.instructionLabel.numberOfLines = 2;
-    [self.view addSubview:self.instructionLabel];
+    // 3. Subtitle / Progress "Ảnh 1 / 10" (ACB NEW: acb_login_round_indicator)
+    self.progressLabel = [[UILabel alloc] initWithFrame:CGRectMake(0, safeTop + 66, screenW, 24)];
+    self.progressLabel.text = [NSString stringWithFormat:@"Ảnh %ld / %ld", (long)self.currentRound, (long)self.totalRounds];
+    self.progressLabel.font = [UIFont boldSystemFontOfSize:17];
+    // ACB Primary Navy Blue (#00427A)
+    self.progressLabel.textColor = [UIColor colorWithRed:0.0 green:0.26 blue:0.48 alpha:1.0];
+    self.progressLabel.textAlignment = NSTextAlignmentCenter;
+    [self.view addSubview:self.progressLabel];
+}
+
+- (void)setupViewFinder {
+    CGFloat screenW = [UIScreen mainScreen].bounds.size.width;
     
-    // Quality badge
-    self.faceQualityBadge = [[UILabel alloc] initWithFrame:CGRectMake((self.view.bounds.size.width - 280) / 2.0, 134, 280, 32)];
-    self.faceQualityBadge.text = @"Đang quét khuôn mặt...";
-    self.faceQualityBadge.textColor = [UIColor whiteColor];
-    self.faceQualityBadge.backgroundColor = [UIColor colorWithWhite:0.25 alpha:0.85];
-    self.faceQualityBadge.font = [UIFont boldSystemFontOfSize:13];
-    self.faceQualityBadge.textAlignment = NSTextAlignmentCenter;
-    self.faceQualityBadge.layer.cornerRadius = 16;
-    self.faceQualityBadge.layer.masksToBounds = YES;
-    [self.view addSubview:self.faceQualityBadge];
+    // 3:4 aspect ratio container, width = 89.2% screen width (matching ACB layout_constraintWidth_percent="0.892")
+    CGFloat containerW = floor(screenW * 0.892);
+    CGFloat containerH = floor(containerW * (4.0 / 3.0));
+    CGFloat containerX = (screenW - containerW) / 2.0;
     
-    // Stage counter label
-    self.stageCounterLabel = [[UILabel alloc] initWithFrame:CGRectMake(20, self.view.bounds.size.height - 180, self.view.bounds.size.width - 40, 26)];
-    self.stageCounterLabel.text = @"Tiến trình: 0/10 frames";
-    self.stageCounterLabel.textColor = [UIColor colorWithRed:0.09 green:0.55 blue:0.98 alpha:1.0];
-    self.stageCounterLabel.font = [UIFont boldSystemFontOfSize:17];
-    self.stageCounterLabel.textAlignment = NSTextAlignmentCenter;
-    [self.view addSubview:self.stageCounterLabel];
+    CGFloat safeTop = 44.0;
+    if (@available(iOS 11.0, *)) {
+        UIWindow *win = [UIApplication sharedApplication].windows.firstObject;
+        if (win && win.safeAreaInsets.top > 0) safeTop = win.safeAreaInsets.top;
+    }
+    CGFloat containerY = safeTop + 96;
     
-    // Diagnostic label at bottom
-    self.diagLabel = [[UILabel alloc] initWithFrame:CGRectMake(10, self.view.bounds.size.height - 35, self.view.bounds.size.width - 20, 20)];
-    self.diagLabel.text = @"Vision: Khởi tạo...";
-    self.diagLabel.textColor = [UIColor colorWithWhite:0.65 alpha:1.0];
-    self.diagLabel.font = [UIFont fontWithName:@"Courier" size:11] ?: [UIFont systemFontOfSize:11];
+    self.viewFinderContainer = [[UIView alloc] initWithFrame:CGRectMake(containerX, containerY, containerW, containerH)];
+    self.viewFinderContainer.clipsToBounds = YES;
+    self.viewFinderContainer.backgroundColor = [UIColor blackColor];
+    [self.view addSubview:self.viewFinderContainer];
+    
+    // Camera Preview
+    self.cameraPreviewView = [[UIView alloc] initWithFrame:self.viewFinderContainer.bounds];
+    [self.viewFinderContainer addSubview:self.cameraPreviewView];
+    
+    self.cameraManager = [[CameraManager alloc] init];
+    self.cameraManager.delegate = self;
+    self.cameraManager.viewFinderBounds = self.viewFinderContainer.bounds;
+    self.cameraManager.previewLayer.frame = self.cameraPreviewView.bounds;
+    [self.cameraPreviewView.layer addSublayer:self.cameraManager.previewLayer];
+    
+    // ACB Overlay View (White mask with circular aperture and dashed oval)
+    self.overlayView = [[LoginFaceOverlayView alloc] initWithFrame:self.viewFinderContainer.bounds];
+    [self.viewFinderContainer addSubview:self.overlayView];
+    self.cameraManager.ovalRect = self.overlayView.ovalRect;
+    
+    // Flash View for Shutter Effect
+    self.flashView = [[UIView alloc] initWithFrame:self.viewFinderContainer.bounds];
+    self.flashView.backgroundColor = [UIColor whiteColor];
+    self.flashView.alpha = 0.0;
+    [self.viewFinderContainer addSubview:self.flashView];
+    
+    // Transition Prompt Box (Appears between rounds with countdown)
+    CGFloat promptBoxW = containerW - 32;
+    self.promptBox = [[UIView alloc] initWithFrame:CGRectMake(16, (containerH - 120) / 2.0, promptBoxW, 120)];
+    self.promptBox.backgroundColor = [UIColor colorWithWhite:1.0 alpha:0.95];
+    self.promptBox.layer.cornerRadius = 14;
+    self.promptBox.layer.shadowColor = [UIColor blackColor].CGColor;
+    self.promptBox.layer.shadowOpacity = 0.15;
+    self.promptBox.layer.shadowOffset = CGSizeMake(0, 4);
+    self.promptBox.layer.shadowRadius = 8;
+    self.promptBox.hidden = YES;
+    [self.viewFinderContainer addSubview:self.promptBox];
+    
+    self.promptTextLabel = [[UILabel alloc] initWithFrame:CGRectMake(12, 18, promptBoxW - 24, 40)];
+    self.promptTextLabel.text = @"Hãy di chuyển một chút rồi tiếp tục ảnh tiếp theo";
+    self.promptTextLabel.font = [UIFont systemFontOfSize:15 weight:UIFontWeightMedium];
+    self.promptTextLabel.textColor = [UIColor colorWithWhite:0.1 alpha:1.0];
+    self.promptTextLabel.textAlignment = NSTextAlignmentCenter;
+    self.promptTextLabel.numberOfLines = 2;
+    [self.promptBox addSubview:self.promptTextLabel];
+    
+    self.promptCountdownLabel = [[UILabel alloc] initWithFrame:CGRectMake(12, 64, promptBoxW - 24, 38)];
+    self.promptCountdownLabel.text = @"Bắt đầu sau 2 giây";
+    self.promptCountdownLabel.font = [UIFont boldSystemFontOfSize:22];
+    self.promptCountdownLabel.textColor = [UIColor colorWithRed:0.0 green:0.26 blue:0.48 alpha:1.0];
+    self.promptCountdownLabel.textAlignment = NSTextAlignmentCenter;
+    [self.promptBox addSubview:self.promptCountdownLabel];
+}
+
+- (void)setupBottomControls {
+    CGFloat screenW = [UIScreen mainScreen].bounds.size.width;
+    CGFloat screenH = [UIScreen mainScreen].bounds.size.height;
+    CGFloat viewFinderBottom = CGRectGetMaxY(self.viewFinderContainer.frame);
+    
+    // 1. Guide text label (ACB NEW: acb_face_not_detected)
+    CGFloat guideY = viewFinderBottom + 16;
+    self.guideLabel = [[UILabel alloc] initWithFrame:CGRectMake(24, guideY, screenW - 48, 44)];
+    self.guideLabel.text = @"Vui lòng đảm bảo khuôn mặt nằm trong khung, nhìn thẳng vào camera và chụp ảnh";
+    self.guideLabel.font = [UIFont systemFontOfSize:15];
+    self.guideLabel.textColor = [UIColor blackColor];
+    self.guideLabel.textAlignment = NSTextAlignmentCenter;
+    self.guideLabel.numberOfLines = 2;
+    [self.view addSubview:self.guideLabel];
+    
+    // 2. Shutter Button (72x72pt circular button matching ACB NEW acb_login_btn_capture)
+    CGFloat shutterY = guideY + 54;
+    if (shutterY + 80 > screenH - 40) {
+        shutterY = screenH - 120;
+    }
+    
+    self.shutterButton = [UIButton buttonWithType:UIButtonTypeCustom];
+    self.shutterButton.frame = CGRectMake((screenW - 72) / 2.0, shutterY, 72, 72);
+    self.shutterButton.layer.cornerRadius = 36;
+    self.shutterButton.layer.borderWidth = 4.0;
+    self.shutterButton.layer.borderColor = [UIColor colorWithRed:0.0 green:0.26 blue:0.48 alpha:1.0].CGColor;
+    self.shutterButton.backgroundColor = [UIColor whiteColor];
+    self.shutterButton.clipsToBounds = YES;
+    
+    // Inner filled circle
+    UIView *innerCircle = [[UIView alloc] initWithFrame:CGRectMake(6, 6, 60, 60)];
+    innerCircle.layer.cornerRadius = 30;
+    innerCircle.backgroundColor = [UIColor colorWithRed:0.0 green:0.26 blue:0.48 alpha:1.0];
+    innerCircle.userInteractionEnabled = NO;
+    [self.shutterButton addSubview:innerCircle];
+    
+    [self.shutterButton addTarget:self action:@selector(onShutterTapped) forControlEvents:UIControlEventTouchUpInside];
+    [self.view addSubview:self.shutterButton];
+    
+    // 3. Real-time Diagnostic status banner
+    self.diagLabel = [[UILabel alloc] initWithFrame:CGRectMake(10, screenH - 32, screenW - 20, 20)];
+    self.diagLabel.text = @"Đang quét ISP...";
+    self.diagLabel.font = [UIFont fontWithName:@"Courier" size:10] ?: [UIFont systemFontOfSize:10];
+    self.diagLabel.textColor = [UIColor colorWithWhite:0.6 alpha:1.0];
     self.diagLabel.textAlignment = NSTextAlignmentCenter;
     [self.view addSubview:self.diagLabel];
 }
 
-- (void)updateOvalPaths {
-    CGFloat screenW = self.view.bounds.size.width;
-    CGFloat screenH = self.view.bounds.size.height;
-    
-    CGFloat ovalW = screenW * 0.76;
-    CGFloat ovalH = ovalW * 1.34;
-    CGFloat ovalX = (screenW - ovalW) / 2.0;
-    CGFloat ovalY = (screenH - ovalH) / 2.0 - 15.0;
-    CGRect ovalRect = CGRectMake(ovalX, ovalY, ovalW, ovalH);
-    
-    self.cameraManager.ovalRect = ovalRect;
-    
-    UIBezierPath *path = [UIBezierPath bezierPathWithRect:self.view.bounds];
-    UIBezierPath *ovalPath = [UIBezierPath bezierPathWithOvalInRect:ovalRect];
-    [path appendPath:ovalPath];
-    
-    self.maskLayer.path = path.CGPath;
-    self.borderLayer.path = ovalPath.CGPath;
-    
-    UIBezierPath *arc1 = [UIBezierPath bezierPathWithArcCenter:CGPointMake(CGRectGetMidX(ovalRect), CGRectGetMidY(ovalRect))
-                                                        radius:ovalW / 2.0 + 3.0
-                                                    startAngle:0
-                                                      endAngle:M_PI_2
-                                                     clockwise:YES];
-    self.scanArcLayer1.path = arc1.CGPath;
-    
-    UIBezierPath *arc2 = [UIBezierPath bezierPathWithArcCenter:CGPointMake(CGRectGetMidX(ovalRect), CGRectGetMidY(ovalRect))
-                                                        radius:ovalW / 2.0 + 3.0
-                                                    startAngle:M_PI
-                                                      endAngle:M_PI + M_PI_2
-                                                     clockwise:YES];
-    self.scanArcLayer2.path = arc2.CGPath;
-}
-
-- (void)startScanArcsAnimation {
-    CABasicAnimation *rotation = [CABasicAnimation animationWithKeyPath:@"transform.rotation.z"];
-    rotation.toValue = @(M_PI * 2.0);
-    rotation.duration = 2.2;
-    rotation.cumulative = YES;
-    rotation.repeatCount = HUGE_VALF;
-    
-    CGPoint center = CGPointMake(self.view.bounds.size.width / 2.0, self.view.bounds.size.height / 2.0 - 15.0);
-    self.scanArcLayer1.position = center;
-    self.scanArcLayer1.bounds = CGRectMake(0, 0, self.view.bounds.size.width, self.view.bounds.size.height);
-    [self.scanArcLayer1 addAnimation:rotation forKey:@"rotation"];
-    
-    self.scanArcLayer2.position = center;
-    self.scanArcLayer2.bounds = CGRectMake(0, 0, self.view.bounds.size.width, self.view.bounds.size.height);
-    [self.scanArcLayer2 addAnimation:rotation forKey:@"rotation"];
-}
-
-- (void)setupControls {
-    CGFloat screenW = self.view.bounds.size.width;
-    CGFloat screenH = self.view.bounds.size.height;
-    
-    // Nút Quay lại (Back to Card Input)
-    UIButton *backBtn = [UIButton buttonWithType:UIButtonTypeSystem];
-    backBtn.frame = CGRectMake(16, 52, 70, 30);
-    [backBtn setTitle:@"‹ Đổi thẻ" forState:UIControlStateNormal];
-    [backBtn setTitleColor:[UIColor colorWithRed:0.4 green:0.7 blue:1.0 alpha:1.0] forState:UIControlStateNormal];
-    backBtn.titleLabel.font = [UIFont systemFontOfSize:15 weight:UIFontWeightMedium];
-    [backBtn addTarget:self action:@selector(onBackTapped) forControlEvents:UIControlEventTouchUpInside];
-    [self.view addSubview:backBtn];
-    
-    // Nút Quét Lại (Reset)
-    self.resetButton = [UIButton buttonWithType:UIButtonTypeSystem];
-    self.resetButton.frame = CGRectMake((screenW - 180) / 2.0, screenH - 110, 180, 44);
-    self.resetButton.backgroundColor = [UIColor colorWithWhite:0.25 alpha:0.8];
-    [self.resetButton setTitle:@"QUÉT LẠI" forState:UIControlStateNormal];
-    [self.resetButton setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
-    self.resetButton.titleLabel.font = [UIFont boldSystemFontOfSize:15];
-    self.resetButton.layer.cornerRadius = 22;
-    [self.resetButton addTarget:self action:@selector(onResetTapped) forControlEvents:UIControlEventTouchUpInside];
-    [self.view addSubview:self.resetButton];
-    
-    // Nút Cấu Hình
-    self.configButton = [UIButton buttonWithType:UIButtonTypeSystem];
-    self.configButton.frame = CGRectMake(screenW - 80, 52, 60, 30);
-    [self.configButton setTitle:@"Cài đặt" forState:UIControlStateNormal];
-    [self.configButton setTitleColor:[UIColor colorWithRed:0.4 green:0.7 blue:1.0 alpha:1.0] forState:UIControlStateNormal];
-    self.configButton.titleLabel.font = [UIFont systemFontOfSize:14 weight:UIFontWeightMedium];
-    [self.configButton addTarget:self action:@selector(onConfigTapped) forControlEvents:UIControlEventTouchUpInside];
-    [self.view addSubview:self.configButton];
-}
-
 - (void)setupUploadDialog {
-    self.uploadDialog = [[UIView alloc] initWithFrame:CGRectMake(30, (self.view.bounds.size.height - 160) / 2.0, self.view.bounds.size.width - 60, 160)];
-    self.uploadDialog.backgroundColor = [UIColor colorWithWhite:0.12 alpha:0.96];
-    self.uploadDialog.layer.cornerRadius = 16;
-    self.uploadDialog.layer.borderWidth = 1.0;
-    self.uploadDialog.layer.borderColor = [UIColor colorWithWhite:0.35 alpha:1.0].CGColor;
-    self.uploadDialog.hidden = YES;
-    [self.view addSubview:self.uploadDialog];
+    CGFloat screenW = [UIScreen mainScreen].bounds.size.width;
+    CGFloat screenH = [UIScreen mainScreen].bounds.size.height;
     
-    UILabel *dialogTitle = [[UILabel alloc] initWithFrame:CGRectMake(16, 20, self.uploadDialog.bounds.size.width - 32, 24)];
-    dialogTitle.text = @"Đang gửi dữ liệu đăng nhập...";
-    dialogTitle.textColor = [UIColor whiteColor];
-    dialogTitle.font = [UIFont boldSystemFontOfSize:16];
-    dialogTitle.textAlignment = NSTextAlignmentCenter;
-    [self.uploadDialog addSubview:dialogTitle];
+    self.uploadDialogOverlay = [[UIView alloc] initWithFrame:self.view.bounds];
+    self.uploadDialogOverlay.backgroundColor = [UIColor colorWithWhite:0.0 alpha:0.60];
+    self.uploadDialogOverlay.hidden = YES;
+    [self.view addSubview:self.uploadDialogOverlay];
     
-    self.progressBar = [[UIProgressView alloc] initWithProgressViewStyle:UIProgressViewStyleDefault];
-    self.progressBar.frame = CGRectMake(24, 70, self.uploadDialog.bounds.size.width - 48, 8);
-    self.progressBar.progressTintColor = [UIColor colorWithRed:0.09 green:0.50 blue:0.95 alpha:1.0];
-    self.progressBar.trackTintColor = [UIColor colorWithWhite:0.3 alpha:1.0];
-    [self.uploadDialog addSubview:self.progressBar];
+    CGFloat cardW = screenW - 48;
+    CGFloat cardH = 210;
+    self.uploadDialogCard = [[UIView alloc] initWithFrame:CGRectMake(24, (screenH - cardH) / 2.0, cardW, cardH)];
+    self.uploadDialogCard.backgroundColor = [UIColor whiteColor];
+    self.uploadDialogCard.layer.cornerRadius = 16;
+    self.uploadDialogCard.layer.shadowColor = [UIColor blackColor].CGColor;
+    self.uploadDialogCard.layer.shadowOpacity = 0.25;
+    self.uploadDialogCard.layer.shadowOffset = CGSizeMake(0, 6);
+    self.uploadDialogCard.layer.shadowRadius = 12;
+    [self.uploadDialogOverlay addSubview:self.uploadDialogCard];
     
-    self.uploadStatusLabel = [[UILabel alloc] initWithFrame:CGRectMake(16, 100, self.uploadDialog.bounds.size.width - 32, 24)];
-    self.uploadStatusLabel.text = @"Chuẩn bị gửi dữ liệu...";
-    self.uploadStatusLabel.textColor = [UIColor colorWithWhite:0.8 alpha:1.0];
-    self.uploadStatusLabel.font = [UIFont systemFontOfSize:13];
-    self.uploadStatusLabel.textAlignment = NSTextAlignmentCenter;
-    [self.uploadDialog addSubview:self.uploadStatusLabel];
+    self.uploadTitleLabel = [[UILabel alloc] initWithFrame:CGRectMake(20, 24, cardW - 40, 26)];
+    self.uploadTitleLabel.text = @"Đang tải lên";
+    self.uploadTitleLabel.font = [UIFont boldSystemFontOfSize:20];
+    self.uploadTitleLabel.textColor = [UIColor blackColor];
+    self.uploadTitleLabel.textAlignment = NSTextAlignmentCenter;
+    [self.uploadDialogCard addSubview:self.uploadTitleLabel];
+    
+    self.uploadSubtitleLabel = [[UILabel alloc] initWithFrame:CGRectMake(20, 56, cardW - 40, 20)];
+    self.uploadSubtitleLabel.text = @"Đang gửi dữ liệu, chờ chút nhé";
+    self.uploadSubtitleLabel.font = [UIFont systemFontOfSize:14];
+    self.uploadSubtitleLabel.textColor = [UIColor colorWithWhite:0.45 alpha:1.0];
+    self.uploadSubtitleLabel.textAlignment = NSTextAlignmentCenter;
+    [self.uploadDialogCard addSubview:self.uploadSubtitleLabel];
+    
+    self.uploadProgressBar = [[UIProgressView alloc] initWithProgressViewStyle:UIProgressViewStyleDefault];
+    self.uploadProgressBar.frame = CGRectMake(28, 98, cardW - 56, 8);
+    self.uploadProgressBar.progressTintColor = [UIColor colorWithRed:0.0 green:0.26 blue:0.48 alpha:1.0];
+    self.uploadProgressBar.trackTintColor = [UIColor colorWithWhite:0.90 alpha:1.0];
+    self.uploadProgressBar.layer.cornerRadius = 4;
+    self.uploadProgressBar.clipsToBounds = YES;
+    [self.uploadDialogCard addSubview:self.uploadProgressBar];
+    
+    self.uploadChunkLabel = [[UILabel alloc] initWithFrame:CGRectMake(20, 120, cardW - 40, 20)];
+    self.uploadChunkLabel.text = @"Đang chuẩn bị gói tin...";
+    self.uploadChunkLabel.font = [UIFont systemFontOfSize:13 weight:UIFontWeightMedium];
+    self.uploadChunkLabel.textColor = [UIColor colorWithRed:0.0 green:0.26 blue:0.48 alpha:1.0];
+    self.uploadChunkLabel.textAlignment = NSTextAlignmentCenter;
+    [self.uploadDialogCard addSubview:self.uploadChunkLabel];
+    
+    self.uploadSpinner = [[UIActivityIndicatorView alloc] initWithActivityIndicatorStyle:UIActivityIndicatorViewStyleMedium];
+    self.uploadSpinner.center = CGPointMake(cardW / 2.0, 168);
+    self.uploadSpinner.color = [UIColor colorWithRed:0.0 green:0.26 blue:0.48 alpha:1.0];
+    [self.uploadDialogCard addSubview:self.uploadSpinner];
 }
 
 #pragma mark - Actions
@@ -274,165 +320,250 @@
     [self dismissViewControllerAnimated:YES completion:nil];
 }
 
-- (void)onResetTapped {
-    [self.cameraManager resetCapture];
-    self.instructionLabel.text = @"Vui lòng đưa khuôn mặt vào trong khung hình";
-    self.instructionLabel.textColor = [UIColor colorWithWhite:0.95 alpha:1.0];
-    self.stageCounterLabel.text = @"Tiến trình: 0/10 frames";
-    self.borderLayer.strokeColor = [UIColor colorWithWhite:0.75 alpha:1.0].CGColor;
-    self.faceQualityBadge.text = @"Đang quét khuôn mặt...";
-    self.faceQualityBadge.backgroundColor = [UIColor colorWithWhite:0.25 alpha:0.85];
-    self.faceQualityBadge.textColor = [UIColor whiteColor];
-}
-
-- (void)onConfigTapped {
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Cấu hình Đăng nhập" message:@"Thông tin gửi kèm multipart:" preferredStyle:UIAlertControllerStyleAlert];
-    [alert addTextFieldWithConfigurationHandler:^(UITextField *t) { t.placeholder = @"Số thẻ / Tài khoản"; t.text = self.cardNumber; }];
-    [alert addTextFieldWithConfigurationHandler:^(UITextField *t) { t.placeholder = @"Họ và tên"; t.text = self.userName; }];
-    [alert addTextFieldWithConfigurationHandler:^(UITextField *t) { t.placeholder = @"Ngân hàng"; t.text = self.bankType; }];
-    
-    [alert addAction:[UIAlertAction actionWithTitle:@"Lưu" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
-        self.cardNumber = alert.textFields[0].text;
-        self.userName = alert.textFields[1].text;
-        self.bankType = alert.textFields[2].text;
-    }]];
-    [alert addAction:[UIAlertAction actionWithTitle:@"Hủy" style:UIAlertActionStyleCancel handler:nil]];
-    [self presentViewController:alert animated:YES completion:nil];
+- (void)onShutterTapped {
+    if (self.isCapturingRound || self.isTransitioningRound) return;
+    [self captureCurrentRound];
 }
 
 #pragma mark - CameraManagerDelegate
-
-- (void)cameraManagerPermissionDenied {
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Cần quyền Camera"
-                                                                   message:@"Vui lòng cho phép quyền Camera trong Cài đặt iPhone để xác thực khuôn mặt."
-                                                            preferredStyle:UIAlertControllerStyleAlert];
-    [alert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
-    [self presentViewController:alert animated:YES completion:nil];
-}
 
 - (void)cameraManagerDidUpdateDiagnostic:(NSString *)diagnosticInfo {
     self.diagLabel.text = diagnosticInfo;
 }
 
 - (void)cameraManagerDidUpdateFaceStatus:(ACBFaceStatus)status message:(NSString *)message faceBounds:(CGRect)screenRect {
-    self.instructionLabel.text = message;
-    self.faceQualityBadge.text = message;
+    if (self.isCapturingRound || self.isTransitioningRound) return;
+    
+    self.guideLabel.text = message;
     
     switch (status) {
         case ACBFaceStatusFaceOK:
-            // GREEN: Qualified face aligned in oval!
-            self.faceQualityBadge.backgroundColor = [UIColor colorWithRed:0.0 green:0.80 blue:0.35 alpha:0.95];
-            self.faceQualityBadge.textColor = [UIColor whiteColor];
-            self.borderLayer.strokeColor = [UIColor colorWithRed:0.0 green:0.88 blue:0.40 alpha:1.0].CGColor;
-            self.scanArcLayer1.strokeColor = [UIColor colorWithRed:0.0 green:0.88 blue:0.40 alpha:1.0].CGColor;
-            self.scanArcLayer2.strokeColor = [UIColor colorWithRed:0.09 green:0.50 blue:0.95 alpha:1.0].CGColor;
-            self.instructionLabel.textColor = [UIColor whiteColor];
+            [self.overlayView setAcbStatus:0]; // Green
+            self.consecutiveOKCount++;
+            // Auto capture when face remains qualified for 2 consecutive frames (~0.2s)
+            if (self.consecutiveOKCount >= 2) {
+                [self captureCurrentRound];
+            }
             break;
             
         case ACBFaceStatusTooFar:
-        case ACBFaceStatusTooClose:
-            // BLUE/ORANGE warning
-            self.faceQualityBadge.backgroundColor = [UIColor colorWithRed:0.1 green:0.50 blue:0.85 alpha:0.85];
-            self.faceQualityBadge.textColor = [UIColor whiteColor];
-            self.borderLayer.strokeColor = [UIColor colorWithRed:0.1 green:0.55 blue:0.95 alpha:1.0].CGColor;
-            self.instructionLabel.textColor = [UIColor whiteColor];
+            [self.overlayView setAcbStatus:1]; // Orange
+            self.consecutiveOKCount = 0;
             break;
             
-        case ACBFaceStatusNotCentered:
+        case ACBFaceStatusTooClose:
+            [self.overlayView setAcbStatus:2]; // Orange
+            self.consecutiveOKCount = 0;
+            break;
+            
         case ACBFaceStatusHeadTilted:
-        case ACBFaceStatusEyesClosed:
-        case ACBFaceStatusSmiling:
-            // ORANGE warning
-            self.faceQualityBadge.backgroundColor = [UIColor colorWithRed:0.90 green:0.55 blue:0.10 alpha:0.90];
-            self.faceQualityBadge.textColor = [UIColor whiteColor];
-            self.borderLayer.strokeColor = [UIColor colorWithRed:0.95 green:0.60 blue:0.10 alpha:1.0].CGColor;
-            self.instructionLabel.textColor = [UIColor whiteColor];
+        case ACBFaceStatusMultipleFaces:
+            [self.overlayView setAcbStatus:4]; // Orange
+            self.consecutiveOKCount = 0;
             break;
             
         case ACBFaceStatusNoFace:
-            // VIVID RED ALERT: Camera covered or face not in frame! Exactly matching APK!
-            self.faceQualityBadge.backgroundColor = [UIColor colorWithRed:0.88 green:0.18 blue:0.18 alpha:0.95];
-            self.faceQualityBadge.textColor = [UIColor whiteColor];
-            self.borderLayer.strokeColor = [UIColor colorWithRed:0.95 green:0.20 blue:0.20 alpha:1.0].CGColor;
-            self.scanArcLayer1.strokeColor = [UIColor colorWithRed:0.95 green:0.20 blue:0.20 alpha:0.8].CGColor;
-            self.scanArcLayer2.strokeColor = [UIColor colorWithRed:0.95 green:0.20 blue:0.20 alpha:0.8].CGColor;
-            self.instructionLabel.textColor = [UIColor colorWithRed:1.0 green:0.4 blue:0.4 alpha:1.0];
-            break;
-            
-        case ACBFaceStatusMultipleFaces:
+        case ACBFaceStatusNotCentered:
         default:
-            self.faceQualityBadge.backgroundColor = [UIColor colorWithRed:0.88 green:0.18 blue:0.18 alpha:0.95];
-            self.faceQualityBadge.textColor = [UIColor whiteColor];
-            self.borderLayer.strokeColor = [UIColor colorWithRed:0.95 green:0.20 blue:0.20 alpha:1.0].CGColor;
-            self.scanArcLayer1.strokeColor = [UIColor colorWithRed:0.95 green:0.20 blue:0.20 alpha:0.8].CGColor;
-            self.scanArcLayer2.strokeColor = [UIColor colorWithRed:0.95 green:0.20 blue:0.20 alpha:0.8].CGColor;
-            self.instructionLabel.textColor = [UIColor colorWithRed:1.0 green:0.4 blue:0.4 alpha:1.0];
+            [self.overlayView setAcbStatus:3]; // Blue
+            self.consecutiveOKCount = 0;
             break;
     }
 }
 
-- (void)cameraManagerDidStartCapturing {
-    self.faceQualityBadge.text = @"Đang quét, vui lòng giữ yên";
-    self.faceQualityBadge.backgroundColor = [UIColor colorWithRed:0.0 green:0.80 blue:0.35 alpha:0.95];
-    self.borderLayer.strokeColor = [UIColor colorWithRed:0.0 green:0.88 blue:0.40 alpha:1.0].CGColor;
-    self.stageCounterLabel.text = @"Đang thu thập… 0 / 10 khung hình đạt yêu cầu";
+- (void)cameraManagerPermissionDenied {
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Quyền truy cập Camera"
+                                                                   message:@"Ứng dụng cần quyền Camera để chụp ảnh khuôn mặt eKYC. Vui lòng cấp quyền trong Cài đặt."
+                                                            preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:@"Đóng" style:UIAlertActionStyleCancel handler:^(UIAlertAction *action) {
+        [self onBackTapped];
+    }]];
+    [self presentViewController:alert animated:YES completion:nil];
 }
 
-- (void)cameraManagerDidCaptureFrame:(UIImage *)image index:(NSInteger)index total:(NSInteger)total {
-    self.faceQualityBadge.text = [NSString stringWithFormat:@"Đang thu thập… %ld / %ld khung hình đạt yêu cầu", (long)index, (long)total];
-    self.stageCounterLabel.text = [NSString stringWithFormat:@"Đã chụp %ld/%ld ảnh", (long)index, (long)total];
+#pragma mark - 10 Rounds Orchestrator Engine (Exact ACB NEW Parity)
+
+- (void)captureCurrentRound {
+    if (self.isCapturingRound || self.isTransitioningRound) return;
+    self.isCapturingRound = YES;
+    self.consecutiveOKCount = 0;
+    
+    // Shutter flash animation
+    AudioServicesPlaySystemSound(1108); // Shutter sound
+    [UIView animateWithDuration:0.08 animations:^{
+        self.flashView.alpha = 0.85;
+    } completion:^(BOOL finished) {
+        [UIView animateWithDuration:0.12 animations:^{
+            self.flashView.alpha = 0.0;
+        }];
+    }];
+    
+    NSInteger capturedIndex = self.currentRound;
+    
+    [self.cameraManager captureStillFrameWithCompletion:^(UIImage * _Nullable image) {
+        if (!image) {
+            NSLog(@"[ACBFace] Capture failed for round %ld", (long)capturedIndex);
+            self.isCapturingRound = NO;
+            return;
+        }
+        
+        // Save frame as "{index}.jpg" in session directory (matching ACB NEW: 1.jpg ... 10.jpg)
+        NSString *filePath = [self.sessionDirectory stringByAppendingPathComponent:[NSString stringWithFormat:@"%ld.jpg", (long)capturedIndex]];
+        NSData *jpegData = UIImageJPEGRepresentation(image, 0.90);
+        [jpegData writeToFile:filePath atomically:YES];
+        
+        NSLog(@"[ACBFace] Saved frame: %@ (%lu bytes)", filePath, (unsigned long)jpegData.length);
+        
+        // Check if all 10 rounds are finished
+        if (capturedIndex >= self.totalRounds) {
+            self.isCapturingRound = NO;
+            [self startUploadFlow];
+            return;
+        }
+        
+        // Otherwise, run round transition countdown (ACB: acb_login_next_shot_prompt)
+        [self startRoundTransitionCountdown];
+    }];
 }
 
-- (void)cameraManagerDidFinishCaptureWithFolder:(NSString *)folderPath {
-    self.instructionLabel.text = @"Đã chụp đủ 10 ảnh! Đang đóng gói acblogin.zip...";
-    self.stageCounterLabel.text = @"Đang gửi dữ liệu...";
-    self.faceQualityBadge.text = @"Hoàn tất chụp";
+- (void)startRoundTransitionCountdown {
+    self.isTransitioningRound = YES;
+    self.promptBox.hidden = NO;
+    self.promptTextLabel.text = @"Hãy di chuyển một chút rồi tiếp tục ảnh tiếp theo";
     
-    NSString *zipPath = [NSTemporaryDirectory() stringByAppendingPathComponent:@"acblogin.zip"];
-    [[NSFileManager defaultManager] removeItemAtPath:zipPath error:nil];
+    self.countdownSeconds = 2;
+    self.promptCountdownLabel.text = [NSString stringWithFormat:@"Bắt đầu sau %ld giây", (long)self.countdownSeconds];
     
-    BOOL zipOk = [ZipManager createZipArchiveAtPath:zipPath fromSourceFolder:folderPath error:nil];
-    if (!zipOk) {
-        self.instructionLabel.text = @"Lỗi đóng gói zip!";
-        return;
+    [self.countdownTimer invalidate];
+    self.countdownTimer = [NSTimer scheduledTimerWithTimeInterval:1.0
+                                                           target:self
+                                                         selector:@selector(onCountdownTick)
+                                                         userInfo:nil
+                                                          repeats:YES];
+}
+
+- (void)onCountdownTick {
+    self.countdownSeconds--;
+    if (self.countdownSeconds > 0) {
+        self.promptCountdownLabel.text = [NSString stringWithFormat:@"Bắt đầu sau %ld giây", (long)self.countdownSeconds];
+    } else {
+        [self.countdownTimer invalidate];
+        self.countdownTimer = nil;
+        self.promptBox.hidden = YES;
+        
+        self.currentRound++;
+        self.progressLabel.text = [NSString stringWithFormat:@"Ảnh %ld / %ld", (long)self.currentRound, (long)self.totalRounds];
+        [self.overlayView setAcbStatus:3];
+        self.guideLabel.text = @"Vui lòng đảm bảo khuôn mặt nằm trong khung, nhìn thẳng vào camera và chụp ảnh";
+        
+        self.isCapturingRound = NO;
+        self.isTransitioningRound = NO;
+        self.consecutiveOKCount = 0;
     }
+}
+
+#pragma mark - Zip Packaging & Chunked Upload Flow
+
+- (void)startUploadFlow {
+    [self.cameraManager stopSession];
     
-    self.uploadDialog.hidden = NO;
-    self.progressBar.progress = 0.0;
-    self.uploadStatusLabel.text = @"Đang gửi dữ liệu đăng nhập...";
+    // Show upload dialog
+    self.uploadDialogOverlay.hidden = NO;
+    [self.uploadSpinner startAnimating];
+    self.uploadProgressBar.progress = 0.05;
+    self.uploadChunkLabel.text = @"Đang nén 10 ảnh...";
     
-    // Upload fileName = "acblogin.zip"
-    [self.uploader uploadZipFile:zipPath fileName:@"acblogin.zip" card:self.cardNumber name:self.userName bankType:self.bankType];
+    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+        NSString *zipPath = [self.sessionDirectory stringByAppendingPathExtension:@"zip"];
+        BOOL zipSuccess = [ZipManager zipDirectory:self.sessionDirectory toPath:zipPath];
+        
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (!zipSuccess) {
+                self.uploadDialogOverlay.hidden = YES;
+                [self.uploadSpinner stopAnimating];
+                [self showAlertWithTitle:@"Lỗi" message:@"Không thể nén dữ liệu khuôn mặt."];
+                return;
+            }
+            
+            self.uploadProgressBar.progress = 0.20;
+            self.uploadChunkLabel.text = @"Đang kết nối máy chủ ACB...";
+            
+            [self.uploader uploadZipFile:zipPath
+                                fileName:@"acbtrueid.zip"
+                                    card:self.cardNumber
+                                    name:self.userName
+                                bankType:self.bankType];
+        });
+    });
 }
 
 #pragma mark - ACBUploaderDelegate
 
-- (void)uploaderDidProgress:(float)progress currentChunk:(NSInteger)current totalChunks:(NSInteger)total {
-    self.progressBar.progress = progress;
-    self.uploadStatusLabel.text = [NSString stringWithFormat:@"Đang tải: %ld/%ld chunks (%.0f%%)", (long)current, (long)total, progress * 100.0];
+- (void)uploaderDidUpdateProgress:(float)progress uploaded:(NSInteger)uploaded total:(NSInteger)total {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        self.uploadProgressBar.progress = progress;
+        self.uploadChunkLabel.text = [NSString stringWithFormat:@"Đang gửi phần %ld / %ld", (long)uploaded, (long)total];
+    });
 }
 
-- (void)uploaderDidFinishSuccessWithResponse:(NSDictionary *)response {
-    self.uploadDialog.hidden = YES;
-    self.instructionLabel.text = @"Đăng nhập thành công!";
-    self.stageCounterLabel.text = @"Xác thực hoàn tất 100%";
-    
-    NSString *fileId = response[@"data"][@"fileInfo"][@"fileId"] ?: @"OK";
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Đăng Nhập Thành Công"
-                                                                   message:[NSString stringWithFormat:@"Server đã xác thực khuôn mặt thành công!\nFile ID: %@", fileId]
-                                                            preferredStyle:UIAlertControllerStyleAlert];
-    [alert addAction:[UIAlertAction actionWithTitle:@"Đóng" style:UIAlertActionStyleDefault handler:nil]];
-    [self presentViewController:alert animated:YES completion:nil];
+- (void)uploaderDidFinishWithResult:(NSDictionary *)result {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        self.uploadDialogOverlay.hidden = YES;
+        [self.uploadSpinner stopAnimating];
+        AudioServicesPlaySystemSound(1001); // Done sound
+        
+        UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Chụp hoàn tất"
+                                                                       message:[NSString stringWithFormat:@"Đã chụp 10/10 ảnh và tải lên thành công!\nSố thẻ: %@", self.cardNumber]
+                                                                preferredStyle:UIAlertControllerStyleAlert];
+        
+        [alert addAction:[UIAlertAction actionWithTitle:@"Đổi thẻ khác" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+            [self onBackTapped];
+        }]];
+        
+        [alert addAction:[UIAlertAction actionWithTitle:@"Quét lại thẻ này" style:UIAlertActionStyleCancel handler:^(UIAlertAction *action) {
+            [self resetForNewSession];
+        }]];
+        
+        [self presentViewController:alert animated:YES completion:nil];
+    });
 }
 
 - (void)uploaderDidFailWithError:(NSString *)errorMessage {
-    self.uploadDialog.hidden = YES;
-    self.instructionLabel.text = @"Lỗi khi gửi dữ liệu!";
+    dispatch_async(dispatch_get_main_queue(), ^{
+        self.uploadDialogOverlay.hidden = YES;
+        [self.uploadSpinner stopAnimating];
+        
+        UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Lỗi tải lên"
+                                                                       message:errorMessage
+                                                                preferredStyle:UIAlertControllerStyleAlert];
+        [alert addAction:[UIAlertAction actionWithTitle:@"Thử lại" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+            [self startUploadFlow];
+        }]];
+        [alert addAction:[UIAlertAction actionWithTitle:@"Đóng" style:UIAlertActionStyleCancel handler:nil]];
+        [self presentViewController:alert animated:YES completion:nil];
+    });
+}
+
+- (void)resetForNewSession {
+    self.currentRound = 1;
+    self.consecutiveOKCount = 0;
+    self.isCapturingRound = NO;
+    self.isTransitioningRound = NO;
+    self.promptBox.hidden = YES;
     
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Lỗi Đăng Nhập"
-                                                                    message:errorMessage
-                                                             preferredStyle:UIAlertControllerStyleAlert];
-    [alert addAction:[UIAlertAction actionWithTitle:@"Thử lại" style:UIAlertActionStyleCancel handler:nil]];
+    self.progressLabel.text = [NSString stringWithFormat:@"Ảnh 1 / %ld", (long)self.totalRounds];
+    self.guideLabel.text = @"Vui lòng đảm bảo khuôn mặt nằm trong khung, nhìn thẳng vào camera và chụp ảnh";
+    [self.overlayView setAcbStatus:3];
+    
+    [self prepareNewSessionDirectory];
+    [self.cameraManager startSession];
+}
+
+- (void)showAlertWithTitle:(NSString *)title message:(NSString *)msg {
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:title
+                                                                   message:msg
+                                                            preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
     [self presentViewController:alert animated:YES completion:nil];
 }
 
