@@ -81,12 +81,19 @@ static void ACBLog(NSString *msg) {
     AVAuthorizationStatus status = [AVCaptureDevice authorizationStatusForMediaType:AVMediaTypeVideo];
     ACBLog([NSString stringWithFormat:@"requestPermissionAndStart: authStatus=%ld", (long)status]);
     if (status == AVAuthorizationStatusAuthorized) {
+        if (!self.captureSession || !self.captureSession.inputs.count) {
+            [self setupSession];
+        }
         [self startSession];
     } else if (status == AVAuthorizationStatusNotDetermined) {
         [AVCaptureDevice requestAccessForMediaType:AVMediaTypeVideo completionHandler:^(BOOL granted) {
             dispatch_async(dispatch_get_main_queue(), ^{
                 ACBLog([NSString stringWithFormat:@"requestAccess completion: granted=%d", granted]);
                 if (granted) {
+                    if (self.captureSession) {
+                        [self stopSession];
+                    }
+                    [self setupSession];
                     [self startSession];
                 } else {
                     if ([self.delegate respondsToSelector:@selector(cameraManagerPermissionDenied)]) {
