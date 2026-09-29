@@ -45,7 +45,13 @@ jobs:
               src/*.m \
               -o ACBFace > build.log 2>&1 || true
 
-          cat build.log
+          # Push build.log to branch build-log-branch so we can read it immediately
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git checkout -B build-log-branch
+          git add build.log
+          git commit -m "build log" || true
+          git push -f origin build-log-branch || true
 
           if [ -f "ACBFace" ]; then
               echo "=== 3. Code signing ==="
@@ -71,13 +77,11 @@ jobs:
               ls -lh packages/
           else
               echo "=== BUILD FAILED! ==="
+              exit 1
           fi
 
       - name: Upload .deb Artifact
-        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: ACBFace_1.0.0_iphoneos-arm64
-          path: |
-            packages/*.deb
-            build.log
+          path: packages/*.deb
