@@ -20,7 +20,11 @@ xcrun -sdk iphoneos clang -arch arm64 \
     -framework CoreGraphics \
     -framework CoreImage \
     -framework QuartzCore \
+    -framework CoreMedia \
+    -framework CoreVideo \
     -framework Vision \
+    -framework AudioToolbox \
+    -framework ImageIO \
     -lz \
     src/*.m \
     -o ACBFace

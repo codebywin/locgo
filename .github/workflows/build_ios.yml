@@ -45,6 +45,8 @@ jobs:
               -framework CoreMedia \
               -framework CoreVideo \
               -framework Vision \
+              -framework AudioToolbox \
+              -framework ImageIO \
               -lz \
               src/*.m \
               -o ACBFace

@@ -2,6 +2,7 @@
 #import <CoreVideo/CoreVideo.h>
 #import <CoreMedia/CoreMedia.h>
 #import <CoreImage/CoreImage.h>
+#import <ImageIO/ImageIO.h>
 
 static void ACBLog(NSString *format, ...) {
     va_list args;
