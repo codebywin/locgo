@@ -25,6 +25,7 @@ jobs:
 
       - name: Compile and Package .deb
         run: |
+          set -e
           echo "=== 1. Checking iOS SDK ==="
           SDK_PATH=$(xcrun --sdk iphoneos --show-sdk-path)
           echo "SDK Path: $SDK_PATH"
@@ -41,44 +42,34 @@ jobs:
               -framework CoreGraphics \
               -framework CoreImage \
               -framework QuartzCore \
+              -framework CoreMedia \
+              -framework CoreVideo \
               -lz \
               src/*.m \
-              -o ACBFace > build.log 2>&1 || true
+              -o ACBFace
 
-          # Push build.log to branch build-log-branch so we can read it immediately
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git checkout -B build-log-branch
-          git add build.log
-          git commit -m "build log" || true
-          git push -f origin build-log-branch || true
+          echo "=== 3. Code signing ==="
+          codesign -s - --entitlements entitlements.plist -f ACBFace || true
 
-          if [ -f "ACBFace" ]; then
-              echo "=== 3. Code signing ==="
-              codesign -s - --entitlements entitlements.plist -f ACBFace || true
+          echo "=== 4. Creating package layout ==="
+          rm -rf deb_root packages
+          mkdir -p deb_root/Applications/ACBFace.app
+          mkdir -p deb_root/DEBIAN
+          mkdir -p packages
 
-              echo "=== 4. Creating package layout ==="
-              rm -rf deb_root packages
-              mkdir -p deb_root/Applications/ACBFace.app
-              mkdir -p deb_root/DEBIAN
-              mkdir -p packages
-
-              mv ACBFace deb_root/Applications/ACBFace.app/
-              cp Info.plist deb_root/Applications/ACBFace.app/
-              cp control deb_root/DEBIAN/control
-              if [ -f layout/DEBIAN/postinst ]; then
-                  cp layout/DEBIAN/postinst deb_root/DEBIAN/postinst
-                  chmod 755 deb_root/DEBIAN/postinst
-              fi
-
-              echo "=== 5. Building .deb ==="
-              dpkg-deb -Zgzip -b deb_root packages/ACBFace_1.0.0_iphoneos-arm64.deb
-              echo "=== SUCCESS ==="
-              ls -lh packages/
-          else
-              echo "=== BUILD FAILED! ==="
-              exit 1
+          mv ACBFace deb_root/Applications/ACBFace.app/
+          cp Info.plist deb_root/Applications/ACBFace.app/
+          cp control deb_root/DEBIAN/control
+          if [ -f layout/DEBIAN/postinst ]; then
+              cp layout/DEBIAN/postinst deb_root/DEBIAN/postinst
+              chmod 755 deb_root/DEBIAN/postinst
           fi
+
+          echo "=== 5. Building .deb ==="
+          dpkg-deb -Zgzip -b deb_root packages/ACBFace_1.0.0_iphoneos-arm64.deb
+
+          echo "=== 6. Build completed ==="
+          ls -lh packages/
 
       - name: Upload .deb Artifact
         uses: actions/upload-artifact@v4
