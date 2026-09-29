@@ -47,7 +47,6 @@
     [self setupOverlayUI];
     [self setupControls];
     [self setupUploadDialog];
-    [self startScanArcsAnimation];
     
     self.uploader = [[ACBUploader alloc] init];
     self.uploader.delegate = self;
@@ -62,6 +61,7 @@
     [super viewDidLayoutSubviews];
     self.cameraManager.previewLayer.frame = self.view.bounds;
     [self updateOvalPaths];
+    [self startScanArcsAnimation];
 }
 
 - (void)setupCamera {

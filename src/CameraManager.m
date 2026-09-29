@@ -29,7 +29,7 @@
         _lastDetectTime = 0;
         _captureQueue = dispatch_queue_create("com.acbface.videoQueue", DISPATCH_QUEUE_SERIAL);
         
-        _ciContext = [CIContext contextWithOptions:@{kCIContextUseSoftwareRenderer: @NO}];
+        _ciContext = [CIContext context];
         _faceDetector = [CIDetector detectorOfType:CIDetectorTypeFace
                                            context:_ciContext
                                            options:@{CIDetectorAccuracy: CIDetectorAccuracyLow}];
@@ -105,7 +105,20 @@
         connection.videoOrientation = AVCaptureVideoOrientationPortrait;
     }
     if (connection.isVideoMirroringSupported) {
+        if ([connection respondsToSelector:@selector(setAutomaticallyAdjustsVideoMirroring:)]) {
+            connection.automaticallyAdjustsVideoMirroring = NO;
+        }
         connection.videoMirrored = YES;
+    }
+    
+    if (self.previewLayer.connection.isVideoOrientationSupported) {
+        self.previewLayer.connection.videoOrientation = AVCaptureVideoOrientationPortrait;
+    }
+    if (self.previewLayer.connection.isVideoMirroringSupported) {
+        if ([self.previewLayer.connection respondsToSelector:@selector(setAutomaticallyAdjustsVideoMirroring:)]) {
+            self.previewLayer.connection.automaticallyAdjustsVideoMirroring = NO;
+        }
+        self.previewLayer.connection.videoMirrored = YES;
     }
     
     [self.captureSession commitConfiguration];
@@ -143,69 +156,71 @@
 #pragma mark - AVCaptureVideoDataOutputSampleBufferDelegate
 
 - (void)captureOutput:(AVCaptureOutput *)output didOutputSampleBuffer:(CMSampleBufferRef)sampleBuffer fromConnection:(AVCaptureConnection *)connection {
-    
-    // Convert to CIImage
-    CVImageBufferRef imageBuffer = CMSampleBufferGetImageBuffer(sampleBuffer);
-    if (!imageBuffer) return;
-    
-    CIImage *ciImage = [CIImage imageWithCVPixelBuffer:imageBuffer];
-    
-    // Convert to UIImage
-    CGImageRef cgImage = [self.ciContext createCGImage:ciImage fromRect:ciImage.extent];
-    if (!cgImage) return;
-    UIImage *currentImage = [UIImage imageWithCGImage:cgImage scale:1.0 orientation:UIImageOrientationRight];
-    CGImageRelease(cgImage);
-    
-    // 1. If currently capturing burst (10 frames):
-    if (self.isCapturing) {
-        NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
-        if (now - self.lastCaptureTime >= 0.10) { // 10 fps
-            self.lastCaptureTime = now;
-            self.capturedCount++;
-            NSInteger index = self.capturedCount;
-            
-            // Save flat frame 1.jpg ... 10.jpg
-            NSString *filePath = [self.sessionDirectory stringByAppendingPathComponent:[NSString stringWithFormat:@"%ld.jpg", (long)index]];
-            NSData *jpegData = UIImageJPEGRepresentation(currentImage, 0.85);
-            [jpegData writeToFile:filePath atomically:YES];
-            
-            dispatch_async(dispatch_get_main_queue(), ^{
-                if ([self.delegate respondsToSelector:@selector(cameraManagerDidCaptureFrame:index:total:)]) {
-                    [self.delegate cameraManagerDidCaptureFrame:currentImage index:index total:self.targetFrameCount];
+    @autoreleasepool {
+        CVImageBufferRef imageBuffer = CMSampleBufferGetImageBuffer(sampleBuffer);
+        if (!imageBuffer) return;
+        
+        // 1. If currently capturing burst (10 frames):
+        if (self.isCapturing) {
+            NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
+            if (now - self.lastCaptureTime >= 0.10) { // 10 fps
+                self.lastCaptureTime = now;
+                self.capturedCount++;
+                NSInteger index = self.capturedCount;
+                
+                CIImage *ciImage = [CIImage imageWithCVPixelBuffer:imageBuffer];
+                CGImageRef cgImage = [self.ciContext createCGImage:ciImage fromRect:ciImage.extent];
+                if (cgImage) {
+                    UIImage *currentImage = [UIImage imageWithCGImage:cgImage scale:1.0 orientation:UIImageOrientationRight];
+                    CGImageRelease(cgImage);
+                    
+                    // Save flat frame 1.jpg ... 10.jpg
+                    NSString *filePath = [self.sessionDirectory stringByAppendingPathComponent:[NSString stringWithFormat:@"%ld.jpg", (long)index]];
+                    NSData *jpegData = UIImageJPEGRepresentation(currentImage, 0.85);
+                    [jpegData writeToFile:filePath atomically:YES];
+                    
+                    dispatch_async(dispatch_get_main_queue(), ^{
+                        if ([self.delegate respondsToSelector:@selector(cameraManagerDidCaptureFrame:index:total:)]) {
+                            [self.delegate cameraManagerDidCaptureFrame:currentImage index:index total:self.targetFrameCount];
+                        }
+                    });
                 }
-            });
-            
-            if (self.capturedCount >= self.targetFrameCount) {
-                self.isCapturing = NO;
-                self.consecutiveOKCount = 0;
-                dispatch_async(dispatch_get_main_queue(), ^{
-                    if ([self.delegate respondsToSelector:@selector(cameraManagerDidFinishCaptureWithFolder:)]) {
-                        [self.delegate cameraManagerDidFinishCaptureWithFolder:self.sessionDirectory];
-                    }
-                });
+                
+                if (self.capturedCount >= self.targetFrameCount) {
+                    self.isCapturing = NO;
+                    self.consecutiveOKCount = 0;
+                    dispatch_async(dispatch_get_main_queue(), ^{
+                        if ([self.delegate respondsToSelector:@selector(cameraManagerDidFinishCaptureWithFolder:)]) {
+                            [self.delegate cameraManagerDidFinishCaptureWithFolder:self.sessionDirectory];
+                        }
+                    });
+                }
             }
+            return;
         }
-        return;
+        
+        // 2. Real-time Face Validation (Rate-limit analysis to ~10 fps for smooth UI)
+        NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
+        if (now - self.lastDetectTime < 0.10) {
+            return;
+        }
+        self.lastDetectTime = now;
+        
+        CIImage *ciImage = [CIImage imageWithCVPixelBuffer:imageBuffer];
+        if (!ciImage || !self.faceDetector) return;
+        
+        NSDictionary *featuresOpts = @{
+            CIDetectorImageOrientation: @(6), // OrientationRight
+            CIDetectorEyeBlink: @YES,
+            CIDetectorSmile: @YES
+        };
+        NSArray<CIFeature *> *features = [self.faceDetector featuresInImage:ciImage options:featuresOpts];
+        CGSize imgSize = ciImage.extent.size;
+        
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [self processFaceFeatures:features imageSize:imgSize];
+        });
     }
-    
-    // 2. Real-time Face Validation (Rate-limit analysis to ~10 fps for smooth UI)
-    NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
-    if (now - self.lastDetectTime < 0.10) {
-        return;
-    }
-    self.lastDetectTime = now;
-    
-    // Run CoreImage Face Detector with Eye and Smile features
-    NSDictionary *featuresOpts = @{
-        CIDetectorImageOrientation: @(6), // OrientationRight
-        CIDetectorEyeBlink: @YES,
-        CIDetectorSmile: @YES
-    };
-    NSArray<CIFeature *> *features = [self.faceDetector featuresInImage:ciImage options:featuresOpts];
-    
-    dispatch_async(dispatch_get_main_queue(), ^{
-        [self processFaceFeatures:features imageSize:ciImage.extent.size];
-    });
 }
 
 #pragma mark - 100% Parity with ACB NEW LoginFaceValidator
