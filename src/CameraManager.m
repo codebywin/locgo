@@ -127,19 +127,13 @@ static void ACBLog(NSString *msg) {
     
     // Video Connection (must be configured AFTER commitConfiguration)
     AVCaptureConnection *videoConn = [self.videoOutput connectionWithMediaType:AVMediaTypeVideo];
-    if (videoConn.isVideoOrientationSupported) {
+    if (videoConn && videoConn.isVideoOrientationSupported) {
         videoConn.videoOrientation = AVCaptureVideoOrientationPortrait;
-    }
-    if (videoConn.isVideoMirroringSupported) {
-        videoConn.videoMirrored = YES;
     }
     
     // Preview Connection
-    if (self.previewLayer.connection.isVideoOrientationSupported) {
+    if (self.previewLayer.connection && self.previewLayer.connection.isVideoOrientationSupported) {
         self.previewLayer.connection.videoOrientation = AVCaptureVideoOrientationPortrait;
-    }
-    if (self.previewLayer.connection.isVideoMirroringSupported) {
-        self.previewLayer.connection.videoMirrored = YES;
     }
 }
 
@@ -232,13 +226,6 @@ static void ACBLog(NSString *msg) {
             return;
         }
         
-        if (connection.isVideoOrientationSupported && connection.videoOrientation != AVCaptureVideoOrientationPortrait) {
-            connection.videoOrientation = AVCaptureVideoOrientationPortrait;
-        }
-        if (connection.isVideoMirroringSupported && !connection.isVideoMirrored) {
-            connection.videoMirrored = YES;
-        }
-        
         // 2. Real-time Apple Neural Engine Vision Face Detection (~12 fps)
         NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
         if (now - self.lastVisionTime < 0.08) return;
@@ -250,7 +237,7 @@ static void ACBLog(NSString *msg) {
         static BOOL loggedFirst = NO;
         if (!loggedFirst) {
             loggedFirst = YES;
-            ACBLog([NSString stringWithFormat:@"CaptureOutput active! Frame: %zux%zu, connOri=%ld, mirrored=%d", bufW, bufH, (long)connection.videoOrientation, connection.isVideoMirrored]);
+            ACBLog([NSString stringWithFormat:@"CaptureOutput active! Frame: %zux%zu, connOri=%ld", bufW, bufH, (long)connection.videoOrientation]);
         }
         
         CGImagePropertyOrientation orientationsToTry[8];
