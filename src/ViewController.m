@@ -207,10 +207,9 @@
     [backBtn addTarget:self action:@selector(onBackTapped) forControlEvents:UIControlEventTouchUpInside];
     [self.view addSubview:backBtn];
     
-    // Nut Quet Lai (Reset) & Nut Chup Ngay
-    CGFloat btnW = (screenW - 48 - 12) / 2.0;
+    // Nut Quet Lai (Reset)
     self.resetButton = [UIButton buttonWithType:UIButtonTypeSystem];
-    self.resetButton.frame = CGRectMake(24, screenH - 100, btnW, 44);
+    self.resetButton.frame = CGRectMake((screenW - 180) / 2.0, screenH - 110, 180, 44);
     self.resetButton.backgroundColor = [UIColor colorWithWhite:0.25 alpha:0.8];
     [self.resetButton setTitle:@"QUÉT LẠI" forState:UIControlStateNormal];
     [self.resetButton setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
@@ -218,16 +217,6 @@
     self.resetButton.layer.cornerRadius = 22;
     [self.resetButton addTarget:self action:@selector(onResetTapped) forControlEvents:UIControlEventTouchUpInside];
     [self.view addSubview:self.resetButton];
-    
-    UIButton *manualBtn = [UIButton buttonWithType:UIButtonTypeSystem];
-    manualBtn.frame = CGRectMake(24 + btnW + 12, screenH - 100, btnW, 44);
-    manualBtn.backgroundColor = [UIColor colorWithRed:0.22 green:0.45 blue:0.96 alpha:0.95];
-    [manualBtn setTitle:@"CHỤP NGAY" forState:UIControlStateNormal];
-    [manualBtn setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
-    manualBtn.titleLabel.font = [UIFont boldSystemFontOfSize:15];
-    manualBtn.layer.cornerRadius = 22;
-    [manualBtn addTarget:self action:@selector(onManualCaptureTapped) forControlEvents:UIControlEventTouchUpInside];
-    [self.view addSubview:manualBtn];
     
     // Nut Cau Hinh
     self.configButton = [UIButton buttonWithType:UIButtonTypeSystem];
@@ -237,10 +226,6 @@
     self.configButton.titleLabel.font = [UIFont systemFontOfSize:14 weight:UIFontWeightMedium];
     [self.configButton addTarget:self action:@selector(onConfigTapped) forControlEvents:UIControlEventTouchUpInside];
     [self.view addSubview:self.configButton];
-}
-
-- (void)onManualCaptureTapped {
-    [self.cameraManager startCapture];
 }
 
 - (void)setupUploadDialog {

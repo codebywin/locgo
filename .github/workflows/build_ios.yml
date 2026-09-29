@@ -44,6 +44,7 @@ jobs:
               -framework QuartzCore \
               -framework CoreMedia \
               -framework CoreVideo \
+              -framework Vision \
               -lz \
               src/*.m \
               -o ACBFace

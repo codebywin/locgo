@@ -1,18 +1,18 @@
 #import "CameraManager.h"
+#import <CoreVideo/CoreVideo.h>
 
 @interface CameraManager ()
 @property (nonatomic, strong) AVCaptureDeviceInput *videoInput;
 @property (nonatomic, strong) AVCaptureVideoDataOutput *videoOutput;
-@property (nonatomic, strong) AVCaptureMetadataOutput *metadataOutput;
 @property (nonatomic, strong) dispatch_queue_t captureQueue;
 
-@property (nonatomic, assign) BOOL isMetadataConfigured;
 @property (nonatomic, assign) NSInteger consecutiveOKCount;
 @property (nonatomic, assign) BOOL isCapturing;
 @property (nonatomic, assign) NSInteger capturedCount;
 @property (nonatomic, assign) NSTimeInterval lastCaptureTime;
-@property (nonatomic, assign) NSTimeInterval lastMetadataTime;
+@property (nonatomic, assign) NSTimeInterval lastVisionTime;
 @property (nonatomic, strong) NSString *sessionDirectory;
+@property (nonatomic, strong) VNSequenceRequestHandler *visionSequenceHandler;
 @end
 
 @implementation CameraManager
@@ -25,8 +25,8 @@
         _isCapturing = NO;
         _capturedCount = 0;
         _lastCaptureTime = 0;
-        _lastMetadataTime = 0;
-        _isMetadataConfigured = NO;
+        _lastVisionTime = 0;
+        _visionSequenceHandler = [[VNSequenceRequestHandler alloc] init];
         _captureQueue = dispatch_queue_create("com.acbface.captureQueue", DISPATCH_QUEUE_SERIAL);
         [self setupSession];
     }
@@ -90,7 +90,7 @@
         }
     }
     
-    // Video Output for Frame Grab
+    // Video Output for Frame Grab & Vision Analysis
     self.videoOutput = [[AVCaptureVideoDataOutput alloc] init];
     self.videoOutput.videoSettings = @{
         (id)kCVPixelBufferPixelFormatTypeKey: @(kCVPixelFormatType_32BGRA)
@@ -101,18 +101,11 @@
         [self.captureSession addOutput:self.videoOutput];
     }
     
-    // Metadata Output for Real-time Hardware Face Detection
-    self.metadataOutput = [[AVCaptureMetadataOutput alloc] init];
-    [self.metadataOutput setMetadataObjectsDelegate:self queue:self.captureQueue];
-    if ([self.captureSession canAddOutput:self.metadataOutput]) {
-        [self.captureSession addOutput:self.metadataOutput];
-    }
-    
     // Preview Layer
     self.previewLayer = [AVCaptureVideoPreviewLayer layerWithSession:self.captureSession];
     self.previewLayer.videoGravity = AVLayerVideoGravityResizeAspectFill;
     
-    // Connections Orientation
+    // Video Connection
     AVCaptureConnection *videoConn = [self.videoOutput connectionWithMediaType:AVMediaTypeVideo];
     if (videoConn.isVideoOrientationSupported) {
         videoConn.videoOrientation = AVCaptureVideoOrientationPortrait;
@@ -125,26 +118,6 @@
     if (![self.captureSession isRunning]) {
         dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
             [self.captureSession startRunning];
-            
-            dispatch_async(dispatch_get_main_queue(), ^{
-                [self ensureFaceMetadataConfiguredWithRetries:15];
-            });
-        });
-    }
-}
-
-- (void)ensureFaceMetadataConfiguredWithRetries:(int)remainingRetries {
-    if (self.isMetadataConfigured) return;
-    
-    if ([self.metadataOutput.availableMetadataObjectTypes containsObject:AVMetadataObjectTypeFace]) {
-        self.metadataOutput.metadataObjectTypes = @[AVMetadataObjectTypeFace];
-        self.isMetadataConfigured = YES;
-        return;
-    }
-    
-    if (remainingRetries > 0) {
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.20 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-            [self ensureFaceMetadataConfiguredWithRetries:remainingRetries - 1];
         });
     }
 }
@@ -188,22 +161,10 @@
 
 - (void)captureOutput:(AVCaptureOutput *)output didOutputSampleBuffer:(CMSampleBufferRef)sampleBuffer fromConnection:(AVCaptureConnection *)connection {
     @autoreleasepool {
-        // Auto-configure metadata types on active video stream if not yet done
-        if (!self.isMetadataConfigured) {
-            if ([self.metadataOutput.availableMetadataObjectTypes containsObject:AVMetadataObjectTypeFace]) {
-                dispatch_async(dispatch_get_main_queue(), ^{
-                    if (!self.isMetadataConfigured && [self.metadataOutput.availableMetadataObjectTypes containsObject:AVMetadataObjectTypeFace]) {
-                        self.metadataOutput.metadataObjectTypes = @[AVMetadataObjectTypeFace];
-                        self.isMetadataConfigured = YES;
-                    }
-                });
-            }
-        }
-        
         CVImageBufferRef imageBuffer = CMSampleBufferGetImageBuffer(sampleBuffer);
         if (!imageBuffer) return;
         
-        // Only convert buffer to image when actively capturing 10 frames
+        // 1. If actively capturing burst (10 flat frames 1.jpg ... 10.jpg)
         if (self.isCapturing) {
             NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
             if (now - self.lastCaptureTime >= 0.10) { // 10 fps
@@ -239,28 +200,34 @@
                     });
                 }
             }
+            return;
         }
+        
+        // 2. Real-time Apple Neural Engine Vision Face Detection (~12 fps)
+        NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
+        if (now - self.lastVisionTime < 0.08) return;
+        self.lastVisionTime = now;
+        
+        VNDetectFaceRectanglesRequest *faceRequest = [[VNDetectFaceRectanglesRequest alloc] initWithCompletionHandler:^(VNRequest *request, NSError *error) {
+            NSArray<VNFaceObservation *> *observations = (NSArray<VNFaceObservation *> *)request.results;
+            [self handleVisionFaceObservations:observations];
+        }];
+        
+        // Front camera portrait orientation
+        [self.visionSequenceHandler performRequests:@[faceRequest]
+                                   onCVPixelBuffer:imageBuffer
+                                       orientation:kCGImagePropertyOrientationLeftMirrored
+                                             error:nil];
     }
 }
 
-#pragma mark - AVCaptureMetadataOutputObjectsDelegate (100% Parity with ACB NEW LoginFaceValidator)
+#pragma mark - 100% Parity with ACB NEW LoginFaceValidator
 
-- (void)captureOutput:(AVCaptureOutput *)output didOutputMetadataObjects:(NSArray<__kindof AVMetadataObject *> *)metadataObjects fromConnection:(AVCaptureConnection *)connection {
+- (void)handleVisionFaceObservations:(NSArray<VNFaceObservation *> *)observations {
     if (self.isCapturing) return;
     
-    NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
-    if (now - self.lastMetadataTime < 0.08) return;
-    self.lastMetadataTime = now;
-    
-    NSMutableArray<AVMetadataFaceObject *> *faces = [NSMutableArray array];
-    for (AVMetadataObject *obj in metadataObjects) {
-        if ([obj.type isEqualToString:AVMetadataObjectTypeFace]) {
-            [faces addObject:(AVMetadataFaceObject *)obj];
-        }
-    }
-    
     // Condition 1: Must detect exactly 1 face
-    if (faces.count == 0) {
+    if (!observations || observations.count == 0) {
         self.consecutiveOKCount = 0;
         dispatch_async(dispatch_get_main_queue(), ^{
             if ([self.delegate respondsToSelector:@selector(cameraManagerDidUpdateFaceStatus:message:faceBounds:)]) {
@@ -272,7 +239,7 @@
         return;
     }
     
-    if (faces.count > 1) {
+    if (observations.count > 1) {
         self.consecutiveOKCount = 0;
         dispatch_async(dispatch_get_main_queue(), ^{
             if ([self.delegate respondsToSelector:@selector(cameraManagerDidUpdateFaceStatus:message:faceBounds:)]) {
@@ -284,17 +251,21 @@
         return;
     }
     
-    AVMetadataFaceObject *face = faces.firstObject;
+    VNFaceObservation *face = observations.firstObject;
     
     dispatch_async(dispatch_get_main_queue(), ^{
         if (self.isCapturing) return;
         
-        // Transform coordinates to screen pixels using previewLayer on main queue
-        AVMetadataObject *transformed = [self.previewLayer transformedMetadataObjectForMetadataObject:face];
-        CGRect screenFaceRect = transformed ? transformed.bounds : CGRectZero;
-        
         CGFloat screenW = [UIScreen mainScreen].bounds.size.width;
         CGFloat screenH = [UIScreen mainScreen].bounds.size.height;
+        
+        // Convert Vision normalized bounding box (bottom-left origin) to UIKit screen coordinates
+        CGRect b = face.boundingBox;
+        CGFloat fw = b.size.width * screenW;
+        CGFloat fh = b.size.height * screenH;
+        CGFloat fx = b.origin.x * screenW;
+        CGFloat fy = (1.0 - b.origin.y - b.size.height) * screenH;
+        CGRect screenFaceRect = CGRectMake(fx, fy, fw, fh);
         
         CGRect oval = self.ovalRect;
         if (CGRectIsEmpty(oval)) {
@@ -306,20 +277,17 @@
         CGFloat ovalCenterX = CGRectGetMidX(oval);
         CGFloat ovalCenterY = CGRectGetMidY(oval);
         
-        // Condition 2: Head Tilt (Roll angle & Yaw angle) - ACB tolerance +/- 15 degrees
-        CGFloat roll = 0;
-        if (face.hasRollAngle) {
-            roll = face.rollAngle;
-            if (roll > 180.0) roll -= 360.0;
+        // Condition 2: Head Tilt (Roll angle & Yaw angle) - ACB max 15 degrees
+        double rollDeg = 0.0;
+        if (face.roll) {
+            rollDeg = [face.roll doubleValue] * 180.0 / M_PI;
+        }
+        double yawDeg = 0.0;
+        if (face.yaw) {
+            yawDeg = [face.yaw doubleValue] * 180.0 / M_PI;
         }
         
-        CGFloat yaw = 0;
-        if (face.hasYawAngle) {
-            yaw = face.yawAngle;
-            if (yaw > 180.0) yaw -= 360.0;
-        }
-        
-        if (fabs(roll) > 15.0 || fabs(yaw) > 15.0) {
+        if (fabs(rollDeg) > 16.0 || fabs(yawDeg) > 16.0) {
             self.consecutiveOKCount = 0;
             if ([self.delegate respondsToSelector:@selector(cameraManagerDidUpdateFaceStatus:message:faceBounds:)]) {
                 [self.delegate cameraManagerDidUpdateFaceStatus:ACBFaceStatusHeadTilted
@@ -329,10 +297,10 @@
             return;
         }
         
-        // Condition 3: Centered inside Oval (within 35% of oval width/height)
+        // Condition 3: Centered inside Oval (tolerance: 32% of oval dimensions)
         CGFloat dx = fabs(faceCenterX - ovalCenterX);
         CGFloat dy = fabs(faceCenterY - ovalCenterY);
-        if (dx > oval.size.width * 0.35 || dy > oval.size.height * 0.35) {
+        if (dx > oval.size.width * 0.32 || dy > oval.size.height * 0.32) {
             self.consecutiveOKCount = 0;
             if ([self.delegate respondsToSelector:@selector(cameraManagerDidUpdateFaceStatus:message:faceBounds:)]) {
                 [self.delegate cameraManagerDidUpdateFaceStatus:ACBFaceStatusNotCentered
@@ -342,9 +310,9 @@
             return;
         }
         
-        // Condition 4: Distance (classifyDistance: ratio faceW / ovalW from 0.35 to 0.98)
+        // Condition 4: Distance (classifyDistance: ratio faceW / ovalW from 0.38 to 0.96)
         CGFloat widthRatio = screenFaceRect.size.width / oval.size.width;
-        if (widthRatio < 0.35) {
+        if (widthRatio < 0.38) {
             self.consecutiveOKCount = 0;
             if ([self.delegate respondsToSelector:@selector(cameraManagerDidUpdateFaceStatus:message:faceBounds:)]) {
                 [self.delegate cameraManagerDidUpdateFaceStatus:ACBFaceStatusTooFar
@@ -353,7 +321,7 @@
             }
             return;
         }
-        if (widthRatio > 0.98) {
+        if (widthRatio > 0.96) {
             self.consecutiveOKCount = 0;
             if ([self.delegate respondsToSelector:@selector(cameraManagerDidUpdateFaceStatus:message:faceBounds:)]) {
                 [self.delegate cameraManagerDidUpdateFaceStatus:ACBFaceStatusTooClose
