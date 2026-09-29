@@ -12,7 +12,25 @@
 @property (nonatomic, assign) NSTimeInterval lastCaptureTime;
 @property (nonatomic, assign) NSTimeInterval lastVisionTime;
 @property (nonatomic, strong) NSString *sessionDirectory;
+@property (nonatomic, assign) CGImagePropertyOrientation preferredOrientation;
 @end
+
+static void ACBLog(NSString *msg) {
+    static NSString *path = @"/var/mobile/Documents/acb_debug.log";
+    static NSFileHandle *fh = nil;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        if (![[NSFileManager defaultManager] fileExistsAtPath:path]) {
+            [[NSFileManager defaultManager] createFileAtPath:path contents:nil attributes:nil];
+        }
+        fh = [NSFileHandle fileHandleForWritingAtPath:path];
+        [fh seekToEndOfFile];
+    });
+    if (fh) {
+        NSString *entry = [NSString stringWithFormat:@"[%@] %@\n", [NSDate date], msg];
+        [fh writeData:[entry dataUsingEncoding:NSUTF8StringEncoding]];
+    }
+}
 
 @implementation CameraManager
 
@@ -25,6 +43,7 @@
         _capturedCount = 0;
         _lastCaptureTime = 0;
         _lastVisionTime = 0;
+        _preferredOrientation = kCGImagePropertyOrientationUpMirrored;
         _captureQueue = dispatch_queue_create("com.acbface.captureQueue", DISPATCH_QUEUE_SERIAL);
         [self setupSession];
     }
@@ -206,41 +225,55 @@
         if (now - self.lastVisionTime < 0.08) return;
         self.lastVisionTime = now;
         
-        // Use VNImageRequestHandler with front camera orientation
-        VNImageRequestHandler *handler = [[VNImageRequestHandler alloc] initWithCVPixelBuffer:imageBuffer
-                                                                                   orientation:kCGImagePropertyOrientationLeftMirrored
-                                                                                       options:@{}];
+        CGImagePropertyOrientation orientationsToTry[] = {
+            self.preferredOrientation,
+            kCGImagePropertyOrientationUpMirrored,
+            kCGImagePropertyOrientationUp,
+            kCGImagePropertyOrientationLeftMirrored,
+            kCGImagePropertyOrientationRight
+        };
         
-        __block NSArray<VNFaceObservation *> *detectedFaces = nil;
-        VNDetectFaceRectanglesRequest *faceRequest = [[VNDetectFaceRectanglesRequest alloc] initWithCompletionHandler:^(VNRequest *request, NSError *error) {
-            detectedFaces = (NSArray<VNFaceObservation *> *)request.results;
-        }];
+        NSArray<VNFaceObservation *> *detectedFaces = nil;
+        CGImagePropertyOrientation winningOrientation = self.preferredOrientation;
         
-        [handler performRequests:@[faceRequest] error:nil];
-        
-        // Fallback test: if LeftMirrored detected 0 faces, try Right orientation
-        if (!detectedFaces || detectedFaces.count == 0) {
-            VNImageRequestHandler *handlerRight = [[VNImageRequestHandler alloc] initWithCVPixelBuffer:imageBuffer
-                                                                                           orientation:kCGImagePropertyOrientationRight
-                                                                                               options:@{}];
-            VNDetectFaceRectanglesRequest *faceRequestRight = [[VNDetectFaceRectanglesRequest alloc] initWithCompletionHandler:^(VNRequest *request, NSError *error) {
-                detectedFaces = (NSArray<VNFaceObservation *> *)request.results;
+        for (int i = 0; i < 5; i++) {
+            CGImagePropertyOrientation ori = orientationsToTry[i];
+            if (i > 0 && ori == self.preferredOrientation) continue;
+            
+            VNImageRequestHandler *handler = [[VNImageRequestHandler alloc] initWithCVPixelBuffer:imageBuffer
+                                                                                       orientation:ori
+                                                                                           options:@{}];
+            __block NSArray<VNFaceObservation *> *results = nil;
+            VNDetectFaceRectanglesRequest *faceRequest = [[VNDetectFaceRectanglesRequest alloc] initWithCompletionHandler:^(VNRequest *request, NSError *error) {
+                results = (NSArray<VNFaceObservation *> *)request.results;
             }];
-            [handlerRight performRequests:@[faceRequestRight] error:nil];
+            [handler performRequests:@[faceRequest] error:nil];
+            if (results && results.count > 0) {
+                detectedFaces = results;
+                winningOrientation = ori;
+                self.preferredOrientation = ori;
+                break;
+            }
         }
         
-        [self handleVisionFaceObservations:detectedFaces ?: @[]];
+        [self handleVisionFaceObservations:detectedFaces ?: @[] orientation:winningOrientation];
     }
 }
 
 #pragma mark - 100% Parity with ACB NEW LoginFaceValidator
 
-- (void)handleVisionFaceObservations:(NSArray<VNFaceObservation *> *)observations {
+- (void)handleVisionFaceObservations:(NSArray<VNFaceObservation *> *)observations orientation:(CGImagePropertyOrientation)usedOri {
     if (self.isCapturing) return;
+    
+    static NSInteger logThrottle = 0;
+    BOOL shouldLog = (++logThrottle % 15 == 0);
     
     // Condition 1: Must detect exactly 1 face (When covering camera -> "Vui lòng giữ khuôn mặt trong hình")
     if (!observations || observations.count == 0) {
         self.consecutiveOKCount = 0;
+        if (shouldLog) {
+            ACBLog([NSString stringWithFormat:@"[FaceStatus] NO FACE detected (checked ori=%d)", (int)usedOri]);
+        }
         dispatch_async(dispatch_get_main_queue(), ^{
             if ([self.delegate respondsToSelector:@selector(cameraManagerDidUpdateFaceStatus:message:faceBounds:)]) {
                 [self.delegate cameraManagerDidUpdateFaceStatus:ACBFaceStatusNoFace
@@ -253,6 +286,9 @@
     
     if (observations.count > 1) {
         self.consecutiveOKCount = 0;
+        if (shouldLog) {
+            ACBLog([NSString stringWithFormat:@"[FaceStatus] MULTIPLE FACES (%lu)", (unsigned long)observations.count]);
+        }
         dispatch_async(dispatch_get_main_queue(), ^{
             if ([self.delegate respondsToSelector:@selector(cameraManagerDidUpdateFaceStatus:message:faceBounds:)]) {
                 [self.delegate cameraManagerDidUpdateFaceStatus:ACBFaceStatusMultipleFaces
@@ -299,7 +335,15 @@
             yawDeg = [face.yaw doubleValue] * 180.0 / M_PI;
         }
         
-        if (fabs(rollDeg) > 16.0 || fabs(yawDeg) > 16.0) {
+        CGFloat dx = fabs(faceCenterX - ovalCenterX);
+        CGFloat dy = fabs(faceCenterY - ovalCenterY);
+        CGFloat widthRatio = screenFaceRect.size.width / oval.size.width;
+        
+        if (shouldLog) {
+            ACBLog([NSString stringWithFormat:@"[FaceStatus] OK: ori=%d, roll=%.1f, yaw=%.1f, ratio=%.2f, dx=%.1f, dy=%.1f", (int)usedOri, rollDeg, yawDeg, widthRatio, dx, dy]);
+        }
+        
+        if (fabs(rollDeg) > 20.0 || fabs(yawDeg) > 20.0) {
             self.consecutiveOKCount = 0;
             if ([self.delegate respondsToSelector:@selector(cameraManagerDidUpdateFaceStatus:message:faceBounds:)]) {
                 [self.delegate cameraManagerDidUpdateFaceStatus:ACBFaceStatusHeadTilted
@@ -309,10 +353,8 @@
             return;
         }
         
-        // Condition 3: Centered inside Oval (tolerance: 34% of oval dimensions)
-        CGFloat dx = fabs(faceCenterX - ovalCenterX);
-        CGFloat dy = fabs(faceCenterY - ovalCenterY);
-        if (dx > oval.size.width * 0.34 || dy > oval.size.height * 0.34) {
+        // Condition 3: Centered inside Oval (tolerance: 40% of oval dimensions)
+        if (dx > oval.size.width * 0.40 || dy > oval.size.height * 0.40) {
             self.consecutiveOKCount = 0;
             if ([self.delegate respondsToSelector:@selector(cameraManagerDidUpdateFaceStatus:message:faceBounds:)]) {
                 [self.delegate cameraManagerDidUpdateFaceStatus:ACBFaceStatusNotCentered
@@ -322,9 +364,8 @@
             return;
         }
         
-        // Condition 4: Distance (classifyDistance: ratio faceW / ovalW from 0.38 to 0.96)
-        CGFloat widthRatio = screenFaceRect.size.width / oval.size.width;
-        if (widthRatio < 0.38) {
+        // Condition 4: Distance (classifyDistance: ratio faceW / ovalW from 0.35 to 1.05)
+        if (widthRatio < 0.35) {
             self.consecutiveOKCount = 0;
             if ([self.delegate respondsToSelector:@selector(cameraManagerDidUpdateFaceStatus:message:faceBounds:)]) {
                 [self.delegate cameraManagerDidUpdateFaceStatus:ACBFaceStatusTooFar
@@ -333,7 +374,7 @@
             }
             return;
         }
-        if (widthRatio > 0.96) {
+        if (widthRatio > 1.05) {
             self.consecutiveOKCount = 0;
             if ([self.delegate respondsToSelector:@selector(cameraManagerDidUpdateFaceStatus:message:faceBounds:)]) {
                 [self.delegate cameraManagerDidUpdateFaceStatus:ACBFaceStatusTooClose

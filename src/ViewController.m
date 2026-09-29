@@ -319,24 +319,24 @@
         case ACBFaceStatusHeadTilted:
         case ACBFaceStatusEyesClosed:
         case ACBFaceStatusSmiling:
-            self.faceQualityBadge.backgroundColor = [UIColor colorWithRed:0.85 green:0.55 blue:0.1 alpha:0.85];
-            self.borderLayer.strokeColor = [UIColor colorWithRed:0.9 green:0.6 blue:0.1 alpha:1.0].CGColor;
+            self.faceQualityBadge.backgroundColor = [UIColor colorWithRed:0.95 green:0.55 blue:0.1 alpha:0.85];
+            self.borderLayer.strokeColor = [UIColor colorWithRed:0.95 green:0.55 blue:0.1 alpha:1.0].CGColor;
             break;
             
         case ACBFaceStatusNoFace:
         case ACBFaceStatusMultipleFaces:
         default:
-            self.faceQualityBadge.backgroundColor = [UIColor colorWithRed:0.85 green:0.25 blue:0.25 alpha:0.90];
-            self.borderLayer.strokeColor = [UIColor colorWithRed:0.85 green:0.30 blue:0.30 alpha:1.0].CGColor;
+            self.faceQualityBadge.backgroundColor = [UIColor colorWithRed:0.88 green:0.22 blue:0.22 alpha:0.92];
+            self.borderLayer.strokeColor = [UIColor colorWithRed:0.88 green:0.22 blue:0.22 alpha:1.0].CGColor;
             break;
     }
 }
 
 - (void)cameraManagerDidStartCapturing {
-    self.faceQualityBadge.text = @"Đang thu thập… 0 / 10 khung hình đạt yêu cầu";
+    self.faceQualityBadge.text = @"Đang quét, vui lòng giữ yên";
     self.faceQualityBadge.backgroundColor = [UIColor colorWithRed:0.0 green:0.80 blue:0.35 alpha:0.95];
     self.borderLayer.strokeColor = [UIColor colorWithRed:0.0 green:0.88 blue:0.4 alpha:1.0].CGColor;
-    self.stageCounterLabel.text = @"Đang thu thập… 0 / 10";
+    self.stageCounterLabel.text = @"Đang thu thập… 0 / 10 khung hình đạt yêu cầu";
 }
 
 - (void)cameraManagerDidCaptureFrame:(UIImage *)image index:(NSInteger)index total:(NSInteger)total {
@@ -345,9 +345,9 @@
 }
 
 - (void)cameraManagerDidFinishCaptureWithFolder:(NSString *)folderPath {
-    self.instructionLabel.text = @"Đã chụp đủ 10 ảnh! Đang đóng gói acblogin.zip...";
+    self.instructionLabel.text = @"Chụp hoàn tất! Đang gửi dữ liệu...";
     self.stageCounterLabel.text = @"Đang gửi dữ liệu...";
-    self.faceQualityBadge.text = @"Hoàn tất chụp";
+    self.faceQualityBadge.text = @"Chụp hoàn tất";
     
     NSString *zipPath = [NSTemporaryDirectory() stringByAppendingPathComponent:@"acblogin.zip"];
     [[NSFileManager defaultManager] removeItemAtPath:zipPath error:nil];
