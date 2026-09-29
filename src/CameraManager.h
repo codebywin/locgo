@@ -10,6 +10,8 @@ typedef NS_ENUM(NSInteger, ACBFaceStatus) {
     ACBFaceStatusTooFar,             // "Vui lòng tiến lại gần hơn chút"
     ACBFaceStatusTooClose,           // "Vui lòng lùi ra xa hơn chút"
     ACBFaceStatusHeadTilted,         // "Vui lòng nhìn thẳng vào màn hình"
+    ACBFaceStatusEyesClosed,         // "Vui lòng mở to mắt"
+    ACBFaceStatusSmiling,            // "Vui lòng giữ nét mặt tự nhiên"
     ACBFaceStatusFaceOK              // "ĐÃ ĐẠT CHUẨN - GIỮ NGUYÊN KHUÔN MẶT"
 };
 
