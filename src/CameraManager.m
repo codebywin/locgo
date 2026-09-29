@@ -149,13 +149,7 @@ static void ACBLog(NSString *msg) {
     
     // Video Output for Frame Grab & Vision Analysis
     self.videoOutput = [[AVCaptureVideoDataOutput alloc] init];
-    self.videoOutput.alwaysDiscardsLateVideoFrames = YES;
-    [self.videoOutput setSampleBufferDelegate:self queue:self.captureQueue];
-    
-    // Use Apple native YUV video format (kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange)
-    self.videoOutput.videoSettings = @{
-        (id)kCVPixelBufferPixelFormatTypeKey: @(kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange)
-    };
+    self.videoOutput.alwaysDiscardsLateVideoFrames = NO;
     
     if ([self.captureSession canAddOutput:self.videoOutput]) {
         [self.captureSession addOutput:self.videoOutput];
@@ -163,6 +157,9 @@ static void ACBLog(NSString *msg) {
     } else {
         ACBLog(@"FAILED to add videoOutput");
     }
+    
+    [self.videoOutput setSampleBufferDelegate:self queue:self.captureQueue];
+    ACBLog([NSString stringWithFormat:@"availablePixelFormats: %@", self.videoOutput.availableVideoCVPixelFormatTypes]);
     
     // Preview Layer
     self.previewLayer = [AVCaptureVideoPreviewLayer layerWithSession:self.captureSession];
@@ -174,7 +171,8 @@ static void ACBLog(NSString *msg) {
     // Video Connection (must be configured AFTER commitConfiguration)
     AVCaptureConnection *videoConn = [self.videoOutput connectionWithMediaType:AVMediaTypeVideo];
     if (videoConn) {
-        ACBLog([NSString stringWithFormat:@"videoConn exists, isOriSupported=%d", videoConn.isVideoOrientationSupported]);
+        ACBLog([NSString stringWithFormat:@"videoConn exists, isOriSupported=%d, isEnabled=%d, isActive=%d", 
+                videoConn.isVideoOrientationSupported, videoConn.isEnabled, videoConn.isActive]);
         if (videoConn.isVideoOrientationSupported) {
             videoConn.videoOrientation = AVCaptureVideoOrientationPortrait;
         }
@@ -185,6 +183,14 @@ static void ACBLog(NSString *msg) {
     // Preview Connection
     if (self.previewLayer.connection && self.previewLayer.connection.isVideoOrientationSupported) {
         self.previewLayer.connection.videoOrientation = AVCaptureVideoOrientationPortrait;
+    }
+}
+
+- (void)captureOutput:(AVCaptureOutput *)output didDropSampleBuffer:(CMSampleBufferRef)sampleBuffer fromConnection:(AVCaptureConnection *)connection {
+    static NSInteger dropCount = 0;
+    if (++dropCount % 20 == 1) {
+        CFStringRef reason = CMGetAttachment(sampleBuffer, kCMSampleBufferAttachmentKey_DroppedFrameReason, NULL);
+        ACBLog([NSString stringWithFormat:@"[DROPPED FRAME] count=%ld, reason=%@", (long)dropCount, reason]);
     }
 }
 
@@ -240,6 +246,10 @@ static void ACBLog(NSString *msg) {
 
 - (void)captureOutput:(AVCaptureOutput *)output didOutputSampleBuffer:(CMSampleBufferRef)sampleBuffer fromConnection:(AVCaptureConnection *)connection {
     @autoreleasepool {
+        static NSInteger totalFrameCounter = 0;
+        if (++totalFrameCounter % 30 == 1) {
+            ACBLog([NSString stringWithFormat:@"[FRAME DELIVERED] #%ld (isCapturing=%d)", (long)totalFrameCounter, self.isCapturing]);
+        }
         CVImageBufferRef imageBuffer = CMSampleBufferGetImageBuffer(sampleBuffer);
         if (!imageBuffer) return;
         
