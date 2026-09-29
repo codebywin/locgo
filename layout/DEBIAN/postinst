@@ -1,13 +1,14 @@
 #!/bin/sh
-# Refresh LaunchServices / SpringBoard Icon Cache
 if [ -d "/Applications/ACBFace.app" ]; then
+    chown -R root:wheel /Applications/ACBFace.app 2>/dev/null || true
+    chmod -R 755 /Applications/ACBFace.app 2>/dev/null || true
     uicache -p /Applications/ACBFace.app 2>/dev/null || true
 fi
 if [ -d "/var/jb/Applications/ACBFace.app" ]; then
+    chown -R root:wheel /var/jb/Applications/ACBFace.app 2>/dev/null || true
+    chmod -R 755 /var/jb/Applications/ACBFace.app 2>/dev/null || true
     uicache -p /var/jb/Applications/ACBFace.app 2>/dev/null || true
 fi
 uicache -a 2>/dev/null || true
-
-# Respring / reload SpringBoard so the icon appears immediately on the home screen
 killall -9 SpringBoard 2>/dev/null || sbreload 2>/dev/null || true
 exit 0

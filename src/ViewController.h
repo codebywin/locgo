@@ -5,4 +5,6 @@
 
 @interface ViewController : UIViewController <CameraManagerDelegate, ACBUploaderDelegate>
 
+@property (nonatomic, strong) NSString *cardNumber;
+
 @end

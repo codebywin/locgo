@@ -38,7 +38,9 @@
     [super viewDidLoad];
     self.view.backgroundColor = [UIColor blackColor];
     
-    self.cardNumber = @"9704000000000000";
+    if (!self.cardNumber || self.cardNumber.length == 0) {
+        self.cardNumber = @"18601771";
+    }
     self.userName = @"NGUYEN VAN A";
     self.bankType = @"ACB";
     
@@ -197,6 +199,15 @@
     CGFloat screenW = self.view.bounds.size.width;
     CGFloat screenH = self.view.bounds.size.height;
     
+    // Nut Quay lai (Back to Card Input)
+    UIButton *backBtn = [UIButton buttonWithType:UIButtonTypeSystem];
+    backBtn.frame = CGRectMake(16, 52, 70, 30);
+    [backBtn setTitle:@"‹ Đổi thẻ" forState:UIControlStateNormal];
+    [backBtn setTitleColor:[UIColor colorWithRed:0.4 green:0.7 blue:1.0 alpha:1.0] forState:UIControlStateNormal];
+    backBtn.titleLabel.font = [UIFont systemFontOfSize:15 weight:UIFontWeightMedium];
+    [backBtn addTarget:self action:@selector(onBackTapped) forControlEvents:UIControlEventTouchUpInside];
+    [self.view addSubview:backBtn];
+    
     // Nut Quet Lai (Reset)
     self.resetButton = [UIButton buttonWithType:UIButtonTypeSystem];
     self.resetButton.frame = CGRectMake((screenW - 180) / 2.0, screenH - 110, 180, 44);
@@ -249,6 +260,11 @@
 }
 
 #pragma mark - Actions
+
+- (void)onBackTapped {
+    [self.cameraManager stopSession];
+    [self dismissViewControllerAnimated:YES completion:nil];
+}
 
 - (void)onResetTapped {
     [self.cameraManager resetCapture];
