@@ -61,10 +61,20 @@ static void ACBLog(NSString *msg) {
         _frameCounter = 0;
         _preferredOrientation = kCGImagePropertyOrientationUpMirrored;
         _captureQueue = dispatch_queue_create("com.acbface.captureQueue", DISPATCH_QUEUE_SERIAL);
-        _ciContext = [CIContext contextWithOptions:@{kCIContextUseSoftwareRenderer: @NO}];
         [self setupSession];
     }
     return self;
+}
+
+- (CIContext *)ciContext {
+    if (!_ciContext) {
+        @try {
+            _ciContext = [CIContext contextWithOptions:nil];
+        } @catch (NSException *e) {
+            ACBLog([NSString stringWithFormat:@"CIContext init exception: %@", e]);
+        }
+    }
+    return _ciContext;
 }
 
 - (void)requestPermissionAndStart {
