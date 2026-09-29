@@ -6,6 +6,7 @@
 @property (nonatomic, strong) AVCaptureMetadataOutput *metadataOutput;
 @property (nonatomic, strong) dispatch_queue_t captureQueue;
 
+@property (nonatomic, assign) BOOL isMetadataConfigured;
 @property (nonatomic, assign) NSInteger consecutiveOKCount;
 @property (nonatomic, assign) BOOL isCapturing;
 @property (nonatomic, assign) NSInteger capturedCount;
@@ -25,6 +26,7 @@
         _capturedCount = 0;
         _lastCaptureTime = 0;
         _lastMetadataTime = 0;
+        _isMetadataConfigured = NO;
         _captureQueue = dispatch_queue_create("com.acbface.captureQueue", DISPATCH_QUEUE_SERIAL);
         [self setupSession];
     }
@@ -125,21 +127,24 @@
             [self.captureSession startRunning];
             
             dispatch_async(dispatch_get_main_queue(), ^{
-                [self enableFaceDetectionIfAvailable];
+                [self ensureFaceMetadataConfiguredWithRetries:15];
             });
         });
     }
 }
 
-- (void)enableFaceDetectionIfAvailable {
+- (void)ensureFaceMetadataConfiguredWithRetries:(int)remainingRetries {
+    if (self.isMetadataConfigured) return;
+    
     if ([self.metadataOutput.availableMetadataObjectTypes containsObject:AVMetadataObjectTypeFace]) {
         self.metadataOutput.metadataObjectTypes = @[AVMetadataObjectTypeFace];
-    } else {
-        // Retry shortly after stream buffer warms up
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-            if ([self.metadataOutput.availableMetadataObjectTypes containsObject:AVMetadataObjectTypeFace]) {
-                self.metadataOutput.metadataObjectTypes = @[AVMetadataObjectTypeFace];
-            }
+        self.isMetadataConfigured = YES;
+        return;
+    }
+    
+    if (remainingRetries > 0) {
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.20 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            [self ensureFaceMetadataConfiguredWithRetries:remainingRetries - 1];
         });
     }
 }
@@ -159,6 +164,20 @@
     [fm createDirectoryAtPath:self.sessionDirectory withIntermediateDirectories:YES attributes:nil error:nil];
 }
 
+- (void)startCapture {
+    if (self.isCapturing) return;
+    [self prepareSessionDirectory];
+    self.capturedCount = 0;
+    self.lastCaptureTime = 0;
+    self.isCapturing = YES;
+    
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if ([self.delegate respondsToSelector:@selector(cameraManagerDidStartCapturing)]) {
+            [self.delegate cameraManagerDidStartCapturing];
+        }
+    });
+}
+
 - (void)resetCapture {
     self.isCapturing = NO;
     self.consecutiveOKCount = 0;
@@ -169,6 +188,18 @@
 
 - (void)captureOutput:(AVCaptureOutput *)output didOutputSampleBuffer:(CMSampleBufferRef)sampleBuffer fromConnection:(AVCaptureConnection *)connection {
     @autoreleasepool {
+        // Auto-configure metadata types on active video stream if not yet done
+        if (!self.isMetadataConfigured) {
+            if ([self.metadataOutput.availableMetadataObjectTypes containsObject:AVMetadataObjectTypeFace]) {
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    if (!self.isMetadataConfigured && [self.metadataOutput.availableMetadataObjectTypes containsObject:AVMetadataObjectTypeFace]) {
+                        self.metadataOutput.metadataObjectTypes = @[AVMetadataObjectTypeFace];
+                        self.isMetadataConfigured = YES;
+                    }
+                });
+            }
+        }
+        
         CVImageBufferRef imageBuffer = CMSampleBufferGetImageBuffer(sampleBuffer);
         if (!imageBuffer) return;
         
@@ -218,7 +249,7 @@
     if (self.isCapturing) return;
     
     NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
-    if (now - self.lastMetadataTime < 0.10) return; // rate limit ~10 fps
+    if (now - self.lastMetadataTime < 0.08) return;
     self.lastMetadataTime = now;
     
     NSMutableArray<AVMetadataFaceObject *> *faces = [NSMutableArray array];
@@ -255,111 +286,97 @@
     
     AVMetadataFaceObject *face = faces.firstObject;
     
-    // Transform coordinates to screen pixels using previewLayer
-    AVMetadataObject *transformed = [self.previewLayer transformedMetadataObjectForMetadataObject:face];
-    CGRect screenFaceRect = transformed ? transformed.bounds : CGRectZero;
-    
-    CGFloat screenW = [UIScreen mainScreen].bounds.size.width;
-    CGFloat screenH = [UIScreen mainScreen].bounds.size.height;
-    
-    CGRect oval = self.ovalRect;
-    if (CGRectIsEmpty(oval)) {
-        oval = CGRectMake(screenW * 0.12, screenH * 0.22, screenW * 0.76, screenW * 0.76 * 1.34);
-    }
-    
-    CGFloat faceCenterX = CGRectGetMidX(screenFaceRect);
-    CGFloat faceCenterY = CGRectGetMidY(screenFaceRect);
-    CGFloat ovalCenterX = CGRectGetMidX(oval);
-    CGFloat ovalCenterY = CGRectGetMidY(oval);
-    
-    // Condition 2: Head Tilt (Roll angle & Yaw angle) - ACB max 10 degrees
-    if (face.hasRollAngle && fabs(face.rollAngle) > 10.0) {
-        self.consecutiveOKCount = 0;
-        dispatch_async(dispatch_get_main_queue(), ^{
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (self.isCapturing) return;
+        
+        // Transform coordinates to screen pixels using previewLayer on main queue
+        AVMetadataObject *transformed = [self.previewLayer transformedMetadataObjectForMetadataObject:face];
+        CGRect screenFaceRect = transformed ? transformed.bounds : CGRectZero;
+        
+        CGFloat screenW = [UIScreen mainScreen].bounds.size.width;
+        CGFloat screenH = [UIScreen mainScreen].bounds.size.height;
+        
+        CGRect oval = self.ovalRect;
+        if (CGRectIsEmpty(oval)) {
+            oval = CGRectMake(screenW * 0.12, screenH * 0.22, screenW * 0.76, screenW * 0.76 * 1.34);
+        }
+        
+        CGFloat faceCenterX = CGRectGetMidX(screenFaceRect);
+        CGFloat faceCenterY = CGRectGetMidY(screenFaceRect);
+        CGFloat ovalCenterX = CGRectGetMidX(oval);
+        CGFloat ovalCenterY = CGRectGetMidY(oval);
+        
+        // Condition 2: Head Tilt (Roll angle & Yaw angle) - ACB tolerance +/- 15 degrees
+        CGFloat roll = 0;
+        if (face.hasRollAngle) {
+            roll = face.rollAngle;
+            if (roll > 180.0) roll -= 360.0;
+        }
+        
+        CGFloat yaw = 0;
+        if (face.hasYawAngle) {
+            yaw = face.yawAngle;
+            if (yaw > 180.0) yaw -= 360.0;
+        }
+        
+        if (fabs(roll) > 15.0 || fabs(yaw) > 15.0) {
+            self.consecutiveOKCount = 0;
             if ([self.delegate respondsToSelector:@selector(cameraManagerDidUpdateFaceStatus:message:faceBounds:)]) {
                 [self.delegate cameraManagerDidUpdateFaceStatus:ACBFaceStatusHeadTilted
                                                         message:@"Vui lòng nhìn thẳng vào màn hình"
                                                      faceBounds:screenFaceRect];
             }
-        });
-        return;
-    }
-    if (face.hasYawAngle && fabs(face.yawAngle) > 10.0) {
-        self.consecutiveOKCount = 0;
-        dispatch_async(dispatch_get_main_queue(), ^{
-            if ([self.delegate respondsToSelector:@selector(cameraManagerDidUpdateFaceStatus:message:faceBounds:)]) {
-                [self.delegate cameraManagerDidUpdateFaceStatus:ACBFaceStatusHeadTilted
-                                                        message:@"Vui lòng nhìn thẳng vào màn hình"
-                                                     faceBounds:screenFaceRect];
-            }
-        });
-        return;
-    }
-    
-    // Condition 3: Centered inside Oval (within 25% of oval width/height)
-    CGFloat dx = fabs(faceCenterX - ovalCenterX);
-    CGFloat dy = fabs(faceCenterY - ovalCenterY);
-    if (dx > oval.size.width * 0.25 || dy > oval.size.height * 0.25) {
-        self.consecutiveOKCount = 0;
-        dispatch_async(dispatch_get_main_queue(), ^{
+            return;
+        }
+        
+        // Condition 3: Centered inside Oval (within 35% of oval width/height)
+        CGFloat dx = fabs(faceCenterX - ovalCenterX);
+        CGFloat dy = fabs(faceCenterY - ovalCenterY);
+        if (dx > oval.size.width * 0.35 || dy > oval.size.height * 0.35) {
+            self.consecutiveOKCount = 0;
             if ([self.delegate respondsToSelector:@selector(cameraManagerDidUpdateFaceStatus:message:faceBounds:)]) {
                 [self.delegate cameraManagerDidUpdateFaceStatus:ACBFaceStatusNotCentered
                                                         message:@"Vui lòng đưa mặt vào giữa khung hình"
                                                      faceBounds:screenFaceRect];
             }
-        });
-        return;
-    }
-    
-    // Condition 4: Distance (classifyDistance: ratio faceW / ovalW from 0.44 to 0.95)
-    CGFloat widthRatio = screenFaceRect.size.width / oval.size.width;
-    if (widthRatio < 0.44) {
-        self.consecutiveOKCount = 0;
-        dispatch_async(dispatch_get_main_queue(), ^{
+            return;
+        }
+        
+        // Condition 4: Distance (classifyDistance: ratio faceW / ovalW from 0.35 to 0.98)
+        CGFloat widthRatio = screenFaceRect.size.width / oval.size.width;
+        if (widthRatio < 0.35) {
+            self.consecutiveOKCount = 0;
             if ([self.delegate respondsToSelector:@selector(cameraManagerDidUpdateFaceStatus:message:faceBounds:)]) {
                 [self.delegate cameraManagerDidUpdateFaceStatus:ACBFaceStatusTooFar
                                                         message:@"Vui lòng tiến lại gần hơn chút"
                                                      faceBounds:screenFaceRect];
             }
-        });
-        return;
-    }
-    if (widthRatio > 0.95) {
-        self.consecutiveOKCount = 0;
-        dispatch_async(dispatch_get_main_queue(), ^{
+            return;
+        }
+        if (widthRatio > 0.98) {
+            self.consecutiveOKCount = 0;
             if ([self.delegate respondsToSelector:@selector(cameraManagerDidUpdateFaceStatus:message:faceBounds:)]) {
                 [self.delegate cameraManagerDidUpdateFaceStatus:ACBFaceStatusTooClose
                                                         message:@"Vui lòng lùi ra xa hơn chút"
                                                      faceBounds:screenFaceRect];
             }
-        });
-        return;
-    }
-    
-    // === ALL CONDITIONS PASSED (FACE_OK) ===
-    self.consecutiveOKCount++;
-    
-    dispatch_async(dispatch_get_main_queue(), ^{
+            return;
+        }
+        
+        // === ALL CONDITIONS PASSED (FACE_OK) ===
+        self.consecutiveOKCount++;
+        
         if ([self.delegate respondsToSelector:@selector(cameraManagerDidUpdateFaceStatus:message:faceBounds:)]) {
             [self.delegate cameraManagerDidUpdateFaceStatus:ACBFaceStatusFaceOK
                                                     message:@"ĐÃ ĐẠT CHUẨN - GIỮ NGUYÊN KHUÔN MẶT"
                                                  faceBounds:screenFaceRect];
         }
-    });
-    
-    // Automatic trigger: require 3 consecutive qualified frames (held steady for ~0.3s)
-    if (self.consecutiveOKCount >= 3) {
-        [self prepareSessionDirectory];
-        self.capturedCount = 0;
-        self.lastCaptureTime = 0;
-        self.isCapturing = YES;
         
-        dispatch_async(dispatch_get_main_queue(), ^{
-            if ([self.delegate respondsToSelector:@selector(cameraManagerDidStartCapturing)]) {
-                [self.delegate cameraManagerDidStartCapturing];
-            }
-        });
-    }
+        // Automatic trigger: require 2 consecutive qualified frames (~0.2s)
+        if (self.consecutiveOKCount >= 2) {
+            [self startCapture];
+        }
+    });
 }
 
 @end

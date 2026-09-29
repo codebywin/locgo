@@ -38,6 +38,7 @@ typedef NS_ENUM(NSInteger, ACBFaceStatus) {
 - (void)requestPermissionAndStart;
 - (void)startSession;
 - (void)stopSession;
+- (void)startCapture;
 - (void)resetCapture;
 
 @end
