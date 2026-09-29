@@ -47,9 +47,9 @@ jobs:
               -lz \
               src/*.m \
               -o ACBFace; then
-              echo "[✓] Successfully compiled Universal ARM64 + ARM64E binary!"
+              echo "[OK] Successfully compiled Universal ARM64 + ARM64E binary!"
           else
-              echo "[!] Universal build failed, falling back to ARM64 binary..."
+              echo "[WARN] Universal build failed, falling back to ARM64 binary..."
               xcrun -sdk iphoneos clang -arch arm64 \
                   -miphoneos-version-min=14.0 \
                   -fobjc-arc \
@@ -94,17 +94,7 @@ jobs:
           mkdir -p deb_roothide/Applications
           cp -R ACBFace.app deb_roothide/Applications/
           mkdir -p deb_roothide/DEBIAN
-          cat << 'EOF' > deb_roothide/DEBIAN/control
-Package: com.client.acbface
-Name: ACB Face
-Version: 1.0.0
-Architecture: iphoneos-arm64e
-Description: ACB eKYC Face Capture & Transfer Client for iOS (RootHide arm64e)
-Maintainer: Developer
-Author: Developer
-Section: Utilities
-Depends: firmware (>= 14.0)
-EOF
+          cp layout/DEBIAN_roothide/control deb_roothide/DEBIAN/control
           if [ -f layout/DEBIAN/postinst ]; then
               cp layout/DEBIAN/postinst deb_roothide/DEBIAN/postinst
               chmod 755 deb_roothide/DEBIAN/postinst
@@ -121,17 +111,7 @@ EOF
           mkdir -p deb_rootless/var/jb/Applications
           cp -R ACBFace.app deb_rootless/var/jb/Applications/
           mkdir -p deb_rootless/DEBIAN
-          cat << 'EOF' > deb_rootless/DEBIAN/control
-Package: com.client.acbface
-Name: ACB Face
-Version: 1.0.0
-Architecture: iphoneos-arm64
-Description: ACB eKYC Face Capture & Transfer Client for iOS (Rootless arm64)
-Maintainer: Developer
-Author: Developer
-Section: Utilities
-Depends: firmware (>= 14.0)
-EOF
+          cp layout/DEBIAN_rootless/control deb_rootless/DEBIAN/control
           if [ -f layout/DEBIAN/postinst ]; then
               cp layout/DEBIAN/postinst deb_rootless/DEBIAN/postinst
               chmod 755 deb_rootless/DEBIAN/postinst
@@ -147,17 +127,7 @@ EOF
           mkdir -p deb_root/Applications
           cp -R ACBFace.app deb_root/Applications/
           mkdir -p deb_root/DEBIAN
-          cat << 'EOF' > deb_root/DEBIAN/control
-Package: com.client.acbface
-Name: ACB Face
-Version: 1.0.0
-Architecture: iphoneos-arm64
-Description: ACB eKYC Face Capture & Transfer Client for iOS (Rootful arm64)
-Maintainer: Developer
-Author: Developer
-Section: Utilities
-Depends: firmware (>= 14.0)
-EOF
+          cp layout/DEBIAN_rootful/control deb_root/DEBIAN/control
           if [ -f layout/DEBIAN/postinst ]; then
               cp layout/DEBIAN/postinst deb_root/DEBIAN/postinst
               chmod 755 deb_root/DEBIAN/postinst
