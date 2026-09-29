@@ -1,0 +1,9 @@
+#!/bin/sh
+if [ -d "/Applications/ACBFace.app" ]; then
+    uicache -u /Applications/ACBFace.app 2>/dev/null || true
+fi
+if [ -d "/var/jb/Applications/ACBFace.app" ]; then
+    uicache -u /var/jb/Applications/ACBFace.app 2>/dev/null || true
+fi
+uicache -a 2>/dev/null || true
+exit 0

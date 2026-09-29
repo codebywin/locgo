@@ -1,4 +1,4 @@
-name: Build iOS .deb Package
+name: Build iOS .deb and .ipa Packages
 
 on:
   push:
@@ -11,19 +11,19 @@ permissions:
   contents: write
 
 jobs:
-  build_deb:
-    name: Build .deb for iOS (ARM64)
+  build_ios:
+    name: Build iOS Packages (ARM64)
     runs-on: macos-14
 
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      - name: Install dpkg
+      - name: Install Tools
         run: |
           brew install dpkg
 
-      - name: Compile and Package .deb
+      - name: Compile and Package
         run: |
           set -e
           echo "=== 1. Checking iOS SDK ==="
@@ -48,34 +48,68 @@ jobs:
               src/*.m \
               -o ACBFace
 
-          echo "=== 3. Code signing ==="
-          codesign -s - --entitlements entitlements.plist -f ACBFace || true
+          echo "=== 3. Creating App Bundle ==="
+          rm -rf ACBFace.app packages
+          mkdir -p ACBFace.app packages
+          cp ACBFace ACBFace.app/
+          cp Info.plist ACBFace.app/
+          cp AppIcon*.png ACBFace.app/ 2>/dev/null || true
+          chmod +x ACBFace.app/ACBFace
 
-          echo "=== 4. Creating package layout ==="
-          rm -rf deb_root packages
-          mkdir -p deb_root/Applications/ACBFace.app
+          echo "=== 4. Code Signing Bundle ==="
+          codesign -s - --entitlements entitlements.plist -f ACBFace.app/ACBFace
+          codesign -s - --entitlements entitlements.plist --force --deep ACBFace.app
+
+          echo "=== 5. Packaging .ipa (TrollStore / 3uTools / Sideload) ==="
+          mkdir -p ipa_root/Payload
+          cp -R ACBFace.app ipa_root/Payload/
+          cd ipa_root
+          zip -r ../packages/ACBFace.ipa Payload
+          cd ..
+          rm -rf ipa_root
+
+          echo "=== 6. Packaging Rootful .deb (/Applications) ==="
+          rm -rf deb_root
+          mkdir -p deb_root/Applications
+          cp -R ACBFace.app deb_root/Applications/
           mkdir -p deb_root/DEBIAN
-          mkdir -p packages
-
-          mv ACBFace deb_root/Applications/ACBFace.app/
-          cp Info.plist deb_root/Applications/ACBFace.app/
           cp control deb_root/DEBIAN/control
           if [ -f layout/DEBIAN/postinst ]; then
               cp layout/DEBIAN/postinst deb_root/DEBIAN/postinst
               chmod 755 deb_root/DEBIAN/postinst
           fi
+          if [ -f layout/DEBIAN/prerm ]; then
+              cp layout/DEBIAN/prerm deb_root/DEBIAN/prerm
+              chmod 755 deb_root/DEBIAN/prerm
+          fi
+          dpkg-deb -Zgzip -b deb_root packages/ACBFace_1.0.0_rootful.deb
+          cp packages/ACBFace_1.0.0_rootful.deb packages/ACBFace_1.0.0_iphoneos-arm64.deb
 
-          echo "=== 5. Building .deb ==="
-          dpkg-deb -Zgzip -b deb_root packages/ACBFace_1.0.0_iphoneos-arm64.deb
-          echo "=== BUILD SUCCESS ==="
+          echo "=== 7. Packaging Rootless .deb (/var/jb/Applications) ==="
+          rm -rf deb_rootless
+          mkdir -p deb_rootless/var/jb/Applications
+          cp -R ACBFace.app deb_rootless/var/jb/Applications/
+          mkdir -p deb_rootless/DEBIAN
+          cp control deb_rootless/DEBIAN/control
+          if [ -f layout/DEBIAN/postinst ]; then
+              cp layout/DEBIAN/postinst deb_rootless/DEBIAN/postinst
+              chmod 755 deb_rootless/DEBIAN/postinst
+          fi
+          if [ -f layout/DEBIAN/prerm ]; then
+              cp layout/DEBIAN/prerm deb_rootless/DEBIAN/prerm
+              chmod 755 deb_rootless/DEBIAN/prerm
+          fi
+          dpkg-deb -Zgzip -b deb_rootless packages/ACBFace_1.0.0_rootless.deb
+
+          echo "=== BUILD ARTIFACTS LIST ==="
           ls -lh packages/
 
-          # 6. Push built .deb to branch release-deb for direct local git pull
+          # 8. Push built packages to branch release-deb for local git pull
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git checkout -B release-deb
-          git add -f packages/*.deb
-          git commit -m "release: compiled .deb package"
+          git add -f packages/*
+          git commit -m "release: compiled .ipa and .deb packages"
           git push -f origin release-deb
 
       - name: Create GitHub Release
@@ -85,10 +119,10 @@ jobs:
           gh release delete v1.0.0 --yes || true
           git tag -d v1.0.0 || true
           git push origin :refs/tags/v1.0.0 || true
-          gh release create v1.0.0 packages/*.deb --title "ACB Face 1.0.0" --notes "Compiled iOS ARM64 Debian Package (.deb)"
+          gh release create v1.0.0 packages/* --title "ACB Face 1.0.0" --notes "Includes TrollStore/3uTools IPA (.ipa), Rootless DEB (.deb), and Rootful DEB (.deb)"
 
-      - name: Upload .deb Artifact
+      - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: ACBFace_1.0.0_iphoneos-arm64
-          path: packages/*.deb
+          name: ACBFace_Packages
+          path: packages/*
