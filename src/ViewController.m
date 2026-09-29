@@ -26,7 +26,6 @@
 @property (nonatomic, strong) UILabel *uploadStatusLabel;
 
 // Configs
-@property (nonatomic, strong) NSString *cardNumber;
 @property (nonatomic, strong) NSString *userName;
 @property (nonatomic, strong) NSString *bankType;
 
