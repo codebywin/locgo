@@ -11,6 +11,8 @@
 @property (nonatomic, strong) UITextField *cardTextField;
 @property (nonatomic, strong) UIButton *startCaptureButton;
 @property (nonatomic, strong) CAGradientLayer *buttonGradient;
+@property (nonatomic, strong) UISwitch *localServerSwitch;
+@property (nonatomic, strong) UILabel *localServerLabel;
 @end
 
 @implementation CardInputViewController
@@ -52,7 +54,11 @@
     self.placeholderHeaderLabel.frame = CGRectMake(16, 10, contentW - 32, 18);
     self.cardTextField.frame = CGRectMake(16, 32, contentW - 32, 34);
     
-    self.startCaptureButton.frame = CGRectMake(padX, CGRectGetMaxY(self.inputContainer.frame) + 36, contentW, 54);
+    CGFloat switchY = CGRectGetMaxY(self.inputContainer.frame) + 16;
+    self.localServerSwitch.frame = CGRectMake(padX, switchY, 51, 31);
+    self.localServerLabel.frame = CGRectMake(padX + 60, switchY + 4, contentW - 60, 24);
+    
+    self.startCaptureButton.frame = CGRectMake(padX, switchY + 46, contentW, 54);
     self.buttonGradient.frame = self.startCaptureButton.bounds;
 }
 
@@ -108,7 +114,19 @@
     self.cardTextField.delegate = self;
     [self.inputContainer addSubview:self.cardTextField];
     
-    // 3. Button "Bắt đầu chụp" with ACB Navy Gradient
+    // 3. Local Test Server Switch
+    self.localServerSwitch = [[UISwitch alloc] init];
+    self.localServerSwitch.on = YES;
+    self.localServerSwitch.onTintColor = [UIColor colorWithRed:0.0 green:0.45 blue:0.85 alpha:1.0];
+    [self.view addSubview:self.localServerSwitch];
+    
+    self.localServerLabel = [[UILabel alloc] init];
+    self.localServerLabel.text = @"Test Server (192.168.1.135:8080)";
+    self.localServerLabel.font = [UIFont systemFontOfSize:14 weight:UIFontWeightMedium];
+    self.localServerLabel.textColor = [UIColor colorWithRed:0.0 green:0.26 blue:0.48 alpha:1.0];
+    [self.view addSubview:self.localServerLabel];
+    
+    // 4. Button "Bắt đầu chụp" with ACB Navy Gradient
     self.startCaptureButton = [UIButton buttonWithType:UIButtonTypeCustom];
     self.startCaptureButton.layer.cornerRadius = 14;
     self.startCaptureButton.clipsToBounds = YES;
@@ -155,6 +173,11 @@
         NSLog(@"[ACBFace] Opening camera view with card: %@", cardNum);
         ViewController *camVC = [[ViewController alloc] init];
         camVC.cardNumber = cardNum;
+        if (self.localServerSwitch.isOn) {
+            camVC.serverBaseUrl = @"http://192.168.1.135:8080";
+        } else {
+            camVC.serverBaseUrl = nil;
+        }
         camVC.modalPresentationStyle = UIModalPresentationFullScreen;
         [self presentViewController:camVC animated:YES completion:nil];
     } @catch (NSException *exception) {

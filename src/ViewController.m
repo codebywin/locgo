@@ -27,7 +27,6 @@
 
 // Bottom Controls
 @property (nonatomic, strong) UILabel *guideLabel;
-@property (nonatomic, strong) UIButton *shutterButton;
 @property (nonatomic, strong) UILabel *diagLabel;
 
 // Upload UI Dialog
@@ -80,6 +79,7 @@
         
         self.uploader = [[ACBUploader alloc] init];
         self.uploader.delegate = self;
+        self.uploader.serverBaseUrl = self.serverBaseUrl;
     } @catch (NSException *e) {
         NSLog(@"[ACBFace] CRASH in viewDidLoad: %@ - %@", e.name, e.reason);
     }
@@ -228,41 +228,23 @@
     CGFloat viewFinderBottom = CGRectGetMaxY(self.viewFinderContainer.frame);
     
     // 1. Guide text label (ACB NEW: acb_face_not_detected)
-    CGFloat guideY = viewFinderBottom + 16;
-    self.guideLabel = [[UILabel alloc] initWithFrame:CGRectMake(24, guideY, screenW - 48, 44)];
-    self.guideLabel.text = @"Vui lòng đảm bảo khuôn mặt nằm trong khung, nhìn thẳng vào camera và chụp ảnh";
-    self.guideLabel.font = [UIFont systemFontOfSize:15];
-    self.guideLabel.textColor = [UIColor blackColor];
+    CGFloat availableBottom = (screenH - 36) - viewFinderBottom;
+    CGFloat guideH = 50.0;
+    CGFloat guideY = viewFinderBottom + (availableBottom - guideH) / 2.0;
+    if (guideY < viewFinderBottom + 12) {
+        guideY = viewFinderBottom + 12;
+    }
+    
+    self.guideLabel = [[UILabel alloc] initWithFrame:CGRectMake(24, guideY, screenW - 48, guideH)];
+    self.guideLabel.text = @"Vui lòng đảm bảo khuôn mặt nằm trong khung, nhìn thẳng vào camera";
+    self.guideLabel.font = [UIFont systemFontOfSize:16 weight:UIFontWeightMedium];
+    self.guideLabel.textColor = [UIColor colorWithRed:0.0 green:0.26 blue:0.48 alpha:1.0];
     self.guideLabel.textAlignment = NSTextAlignmentCenter;
     self.guideLabel.numberOfLines = 2;
     [self.view addSubview:self.guideLabel];
     
-    // 2. Shutter Button (72x72pt circular button matching ACB NEW acb_login_btn_capture)
-    CGFloat shutterY = guideY + 54;
-    if (shutterY + 80 > screenH - 40) {
-        shutterY = screenH - 120;
-    }
-    
-    self.shutterButton = [UIButton buttonWithType:UIButtonTypeCustom];
-    self.shutterButton.frame = CGRectMake((screenW - 72) / 2.0, shutterY, 72, 72);
-    self.shutterButton.layer.cornerRadius = 36;
-    self.shutterButton.layer.borderWidth = 4.0;
-    self.shutterButton.layer.borderColor = [UIColor colorWithRed:0.0 green:0.26 blue:0.48 alpha:1.0].CGColor;
-    self.shutterButton.backgroundColor = [UIColor whiteColor];
-    self.shutterButton.clipsToBounds = YES;
-    
-    // Inner filled circle
-    UIView *innerCircle = [[UIView alloc] initWithFrame:CGRectMake(6, 6, 60, 60)];
-    innerCircle.layer.cornerRadius = 30;
-    innerCircle.backgroundColor = [UIColor colorWithRed:0.0 green:0.26 blue:0.48 alpha:1.0];
-    innerCircle.userInteractionEnabled = NO;
-    [self.shutterButton addSubview:innerCircle];
-    
-    [self.shutterButton addTarget:self action:@selector(onShutterTapped) forControlEvents:UIControlEventTouchUpInside];
-    [self.view addSubview:self.shutterButton];
-    
-    // 3. Real-time Diagnostic status banner
-    self.diagLabel = [[UILabel alloc] initWithFrame:CGRectMake(10, screenH - 32, screenW - 20, 20)];
+    // 2. Real-time Diagnostic status banner
+    self.diagLabel = [[UILabel alloc] initWithFrame:CGRectMake(10, screenH - 30, screenW - 20, 20)];
     self.diagLabel.text = @"Đang quét ISP...";
     self.diagLabel.font = [UIFont fontWithName:@"Courier" size:10] ?: [UIFont systemFontOfSize:10];
     self.diagLabel.textColor = [UIColor colorWithWhite:0.6 alpha:1.0];
@@ -330,11 +312,6 @@
 - (void)onBackTapped {
     [self.cameraManager stopSession];
     [self dismissViewControllerAnimated:YES completion:nil];
-}
-
-- (void)onShutterTapped {
-    if (self.isCapturingRound || self.isTransitioningRound) return;
-    [self captureCurrentRound];
 }
 
 #pragma mark - CameraManagerDelegate
@@ -466,7 +443,7 @@
         self.currentRound++;
         self.progressLabel.text = [NSString stringWithFormat:@"Ảnh %ld / %ld", (long)self.currentRound, (long)self.totalRounds];
         [self.overlayView setAcbStatus:3];
-        self.guideLabel.text = @"Vui lòng đảm bảo khuôn mặt nằm trong khung, nhìn thẳng vào camera và chụp ảnh";
+        self.guideLabel.text = @"Vui lòng đảm bảo khuôn mặt nằm trong khung, nhìn thẳng vào camera";
         
         self.isCapturingRound = NO;
         self.isTransitioningRound = NO;
@@ -511,14 +488,14 @@
 
 #pragma mark - ACBUploaderDelegate
 
-- (void)uploaderDidUpdateProgress:(float)progress uploaded:(NSInteger)uploaded total:(NSInteger)total {
+- (void)uploaderDidProgress:(float)progress currentChunk:(NSInteger)current totalChunks:(NSInteger)total {
     dispatch_async(dispatch_get_main_queue(), ^{
         self.uploadProgressBar.progress = progress;
-        self.uploadChunkLabel.text = [NSString stringWithFormat:@"Đang gửi phần %ld / %ld", (long)uploaded, (long)total];
+        self.uploadChunkLabel.text = [NSString stringWithFormat:@"Đang gửi phần %ld / %ld", (long)current, (long)total];
     });
 }
 
-- (void)uploaderDidFinishWithResult:(NSDictionary *)result {
+- (void)uploaderDidFinishSuccessWithResponse:(NSDictionary *)response {
     dispatch_async(dispatch_get_main_queue(), ^{
         self.uploadDialogOverlay.hidden = YES;
         [self.uploadSpinner stopAnimating];
@@ -564,7 +541,7 @@
     self.promptBox.hidden = YES;
     
     self.progressLabel.text = [NSString stringWithFormat:@"Ảnh 1 / %ld", (long)self.totalRounds];
-    self.guideLabel.text = @"Vui lòng đảm bảo khuôn mặt nằm trong khung, nhìn thẳng vào camera và chụp ảnh";
+    self.guideLabel.text = @"Vui lòng đảm bảo khuôn mặt nằm trong khung, nhìn thẳng vào camera";
     [self.overlayView setAcbStatus:3];
     
     [self prepareNewSessionDirectory];

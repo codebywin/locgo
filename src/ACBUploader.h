@@ -10,6 +10,7 @@
 @interface ACBUploader : NSObject
 
 @property (nonatomic, weak) id<ACBUploaderDelegate> delegate;
+@property (nonatomic, strong, nullable) NSString *serverBaseUrl;
 
 - (void)uploadZipFile:(NSString *)zipFilePath
              fileName:(NSString *)fileName

