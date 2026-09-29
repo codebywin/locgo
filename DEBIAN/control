@@ -1,0 +1,10 @@
+Package: com.client.acbface
+Name: ACB Face Capture
+Version: 1.0.0
+Architecture: iphoneos-arm64
+Description: ACB eKYC Face Capture & Transfer Client for iOS
+Maintainer: Developer
+Author: Developer
+Section: Utilities
+Depends: firmware (>= 14.0)
+Icon: AppIcon.png

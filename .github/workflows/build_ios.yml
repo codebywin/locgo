@@ -1,0 +1,54 @@
+name: Build iOS .deb and .ipa
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-14
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Theos & iOS SDK
+        run: |
+          echo "Cloning Theos..."
+          git clone --recursive https://github.com/theos/theos.git $HOME/theos
+          echo "Cloning iOS SDKs..."
+          git clone --depth=1 https://github.com/theos/sdks.git $HOME/theos/sdks
+
+      - name: Build .deb Package
+        run: |
+          export THEOS=$HOME/theos
+          make clean
+          make package FINALPACKAGE=1
+
+      - name: Build .ipa Package
+        run: |
+          mkdir -p Payload
+          if [ -d ".theos/obj/ACBFace.app" ]; then
+            cp -r .theos/obj/ACBFace.app Payload/
+          elif [ -d ".theos/obj/debug/ACBFace.app" ]; then
+            cp -r .theos/obj/debug/ACBFace.app Payload/
+          fi
+          if [ -d "Payload/ACBFace.app" ]; then
+            zip -r packages/ACBFace.ipa Payload
+            echo "[OK] Built ACBFace.ipa successfully"
+          fi
+
+      - name: Upload .deb Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ACBFace-deb
+          path: packages/*.deb
+
+      - name: Upload .ipa Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ACBFace-ipa
+          path: packages/*.ipa

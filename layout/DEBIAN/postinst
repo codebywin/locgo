@@ -1,0 +1,3 @@
+#!/bin/sh
+uicache -p /Applications/ACBFace.app 2>/dev/null || uicache -a 2>/dev/null || true
+exit 0
