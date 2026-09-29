@@ -25,8 +25,47 @@ jobs:
 
       - name: Compile and Package .deb
         run: |
-          chmod +x build_deb.sh
-          bash build_deb.sh
+          set -e
+          echo "=== 1. Checking iOS SDK ==="
+          SDK_PATH=$(xcrun --sdk iphoneos --show-sdk-path)
+          echo "SDK Path: $SDK_PATH"
+
+          echo "=== 2. Compiling ARM64 binary ==="
+          xcrun -sdk iphoneos clang -arch arm64 \
+              -miphoneos-version-min=14.0 \
+              -fobjc-arc \
+              -isysroot "$SDK_PATH" \
+              -framework UIKit \
+              -framework AVFoundation \
+              -framework CoreGraphics \
+              -framework CoreImage \
+              -framework QuartzCore \
+              -lz \
+              src/*.m \
+              -o ACBFace
+
+          echo "=== 3. Ad-hoc code signing ==="
+          codesign -s - --entitlements entitlements.plist -f ACBFace || true
+
+          echo "=== 4. Creating package layout ==="
+          rm -rf deb_root packages
+          mkdir -p deb_root/Applications/ACBFace.app
+          mkdir -p deb_root/DEBIAN
+          mkdir -p packages
+
+          mv ACBFace deb_root/Applications/ACBFace.app/
+          cp Info.plist deb_root/Applications/ACBFace.app/
+          cp control deb_root/DEBIAN/control
+          if [ -f layout/DEBIAN/postinst ]; then
+              cp layout/DEBIAN/postinst deb_root/DEBIAN/postinst
+              chmod 755 deb_root/DEBIAN/postinst
+          fi
+
+          echo "=== 5. Building .deb ==="
+          dpkg-deb -Zgzip -b deb_root packages/ACBFace_1.0.0_iphoneos-arm64.deb
+
+          echo "=== 6. Build completed ==="
+          ls -lh packages/
 
       - name: Upload .deb Artifact
         uses: actions/upload-artifact@v4
