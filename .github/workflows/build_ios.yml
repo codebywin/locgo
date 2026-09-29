@@ -1,4 +1,4 @@
-name: Build iOS .deb and .ipa Packages
+name: Build iOS Packages (RootHide, Rootless, Rootful, IPA)
 
 on:
   push:
@@ -12,7 +12,7 @@ permissions:
 
 jobs:
   build_ios:
-    name: Build iOS Packages (ARM64)
+    name: Build iOS Packages
     runs-on: macos-14
 
     steps:
@@ -30,8 +30,8 @@ jobs:
           SDK_PATH=$(xcrun --sdk iphoneos --show-sdk-path)
           echo "SDK Path: $SDK_PATH"
 
-          echo "=== 2. Compiling ARM64 binary ==="
-          xcrun -sdk iphoneos clang -arch arm64 \
+          echo "=== 2. Compiling binary ==="
+          if xcrun -sdk iphoneos clang -arch arm64 -arch arm64e \
               -miphoneos-version-min=14.0 \
               -fobjc-arc \
               -isysroot "$SDK_PATH" \
@@ -46,7 +46,28 @@ jobs:
               -framework CoreVideo \
               -lz \
               src/*.m \
-              -o ACBFace
+              -o ACBFace; then
+              echo "[✓] Successfully compiled Universal ARM64 + ARM64E binary!"
+          else
+              echo "[!] Universal build failed, falling back to ARM64 binary..."
+              xcrun -sdk iphoneos clang -arch arm64 \
+                  -miphoneos-version-min=14.0 \
+                  -fobjc-arc \
+                  -isysroot "$SDK_PATH" \
+                  -Wno-deprecated-declarations \
+                  -Wno-nullability-completeness \
+                  -framework UIKit \
+                  -framework AVFoundation \
+                  -framework CoreGraphics \
+                  -framework CoreImage \
+                  -framework QuartzCore \
+                  -framework CoreMedia \
+                  -framework CoreVideo \
+                  -lz \
+                  src/*.m \
+                  -o ACBFace
+          fi
+          file ACBFace
 
           echo "=== 3. Creating App Bundle ==="
           rm -rf ACBFace.app packages
@@ -68,29 +89,49 @@ jobs:
           cd ..
           rm -rf ipa_root
 
-          echo "=== 6. Packaging Rootful .deb (/Applications) ==="
-          rm -rf deb_root
-          mkdir -p deb_root/Applications
-          cp -R ACBFace.app deb_root/Applications/
-          mkdir -p deb_root/DEBIAN
-          cp control deb_root/DEBIAN/control
+          echo "=== 6. Packaging RootHide .deb (iphoneos-arm64e) ==="
+          rm -rf deb_roothide
+          mkdir -p deb_roothide/Applications
+          cp -R ACBFace.app deb_roothide/Applications/
+          mkdir -p deb_roothide/DEBIAN
+          cat << 'EOF' > deb_roothide/DEBIAN/control
+Package: com.client.acbface
+Name: ACB Face
+Version: 1.0.0
+Architecture: iphoneos-arm64e
+Description: ACB eKYC Face Capture & Transfer Client for iOS (RootHide arm64e)
+Maintainer: Developer
+Author: Developer
+Section: Utilities
+Depends: firmware (>= 14.0)
+EOF
           if [ -f layout/DEBIAN/postinst ]; then
-              cp layout/DEBIAN/postinst deb_root/DEBIAN/postinst
-              chmod 755 deb_root/DEBIAN/postinst
+              cp layout/DEBIAN/postinst deb_roothide/DEBIAN/postinst
+              chmod 755 deb_roothide/DEBIAN/postinst
           fi
           if [ -f layout/DEBIAN/prerm ]; then
-              cp layout/DEBIAN/prerm deb_root/DEBIAN/prerm
-              chmod 755 deb_root/DEBIAN/prerm
+              cp layout/DEBIAN/prerm deb_roothide/DEBIAN/prerm
+              chmod 755 deb_roothide/DEBIAN/prerm
           fi
-          dpkg-deb -Zgzip -b deb_root packages/ACBFace_1.0.0_rootful.deb
-          cp packages/ACBFace_1.0.0_rootful.deb packages/ACBFace_1.0.0_iphoneos-arm64.deb
+          dpkg-deb -Zgzip -b deb_roothide packages/ACBFace_1.0.0_roothide.deb
+          cp packages/ACBFace_1.0.0_roothide.deb packages/ACBFace_1.0.0_iphoneos-arm64e.deb
 
-          echo "=== 7. Packaging Rootless .deb (/var/jb/Applications) ==="
+          echo "=== 7. Packaging Rootless .deb (iphoneos-arm64) ==="
           rm -rf deb_rootless
           mkdir -p deb_rootless/var/jb/Applications
           cp -R ACBFace.app deb_rootless/var/jb/Applications/
           mkdir -p deb_rootless/DEBIAN
-          cp control deb_rootless/DEBIAN/control
+          cat << 'EOF' > deb_rootless/DEBIAN/control
+Package: com.client.acbface
+Name: ACB Face
+Version: 1.0.0
+Architecture: iphoneos-arm64
+Description: ACB eKYC Face Capture & Transfer Client for iOS (Rootless arm64)
+Maintainer: Developer
+Author: Developer
+Section: Utilities
+Depends: firmware (>= 14.0)
+EOF
           if [ -f layout/DEBIAN/postinst ]; then
               cp layout/DEBIAN/postinst deb_rootless/DEBIAN/postinst
               chmod 755 deb_rootless/DEBIAN/postinst
@@ -101,15 +142,41 @@ jobs:
           fi
           dpkg-deb -Zgzip -b deb_rootless packages/ACBFace_1.0.0_rootless.deb
 
+          echo "=== 8. Packaging Rootful .deb (iphoneos-arm64) ==="
+          rm -rf deb_root
+          mkdir -p deb_root/Applications
+          cp -R ACBFace.app deb_root/Applications/
+          mkdir -p deb_root/DEBIAN
+          cat << 'EOF' > deb_root/DEBIAN/control
+Package: com.client.acbface
+Name: ACB Face
+Version: 1.0.0
+Architecture: iphoneos-arm64
+Description: ACB eKYC Face Capture & Transfer Client for iOS (Rootful arm64)
+Maintainer: Developer
+Author: Developer
+Section: Utilities
+Depends: firmware (>= 14.0)
+EOF
+          if [ -f layout/DEBIAN/postinst ]; then
+              cp layout/DEBIAN/postinst deb_root/DEBIAN/postinst
+              chmod 755 deb_root/DEBIAN/postinst
+          fi
+          if [ -f layout/DEBIAN/prerm ]; then
+              cp layout/DEBIAN/prerm deb_root/DEBIAN/prerm
+              chmod 755 deb_root/DEBIAN/prerm
+          fi
+          dpkg-deb -Zgzip -b deb_root packages/ACBFace_1.0.0_rootful.deb
+
           echo "=== BUILD ARTIFACTS LIST ==="
           ls -lh packages/
 
-          # 8. Push built packages to branch release-deb for local git pull
+          # 9. Push built packages to branch release-deb for local git pull
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git checkout -B release-deb
           git add -f packages/*
-          git commit -m "release: compiled .ipa and .deb packages"
+          git commit -m "release: compiled RootHide arm64e, rootless, rootful, and IPA packages"
           git push -f origin release-deb
 
       - name: Create GitHub Release
@@ -119,7 +186,7 @@ jobs:
           gh release delete v1.0.0 --yes || true
           git tag -d v1.0.0 || true
           git push origin :refs/tags/v1.0.0 || true
-          gh release create v1.0.0 packages/* --title "ACB Face 1.0.0" --notes "Includes TrollStore/3uTools IPA (.ipa), Rootless DEB (.deb), and Rootful DEB (.deb)"
+          gh release create v1.0.0 packages/* --title "ACB Face 1.0.0" --notes "Includes RootHide (iphoneos-arm64e), Rootless (arm64), Rootful (arm64), and TrollStore/3uTools IPA"
 
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
