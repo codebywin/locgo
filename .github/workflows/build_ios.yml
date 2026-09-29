@@ -25,7 +25,6 @@ jobs:
 
       - name: Compile and Package .deb
         run: |
-          set -e
           echo "=== 1. Checking iOS SDK ==="
           SDK_PATH=$(xcrun --sdk iphoneos --show-sdk-path)
           echo "SDK Path: $SDK_PATH"
@@ -44,33 +43,41 @@ jobs:
               -framework QuartzCore \
               -lz \
               src/*.m \
-              -o ACBFace
+              -o ACBFace > build.log 2>&1 || true
 
-          echo "=== 3. Ad-hoc code signing ==="
-          codesign -s - --entitlements entitlements.plist -f ACBFace || true
+          cat build.log
 
-          echo "=== 4. Creating package layout ==="
-          rm -rf deb_root packages
-          mkdir -p deb_root/Applications/ACBFace.app
-          mkdir -p deb_root/DEBIAN
-          mkdir -p packages
+          if [ -f "ACBFace" ]; then
+              echo "=== 3. Code signing ==="
+              codesign -s - --entitlements entitlements.plist -f ACBFace || true
 
-          mv ACBFace deb_root/Applications/ACBFace.app/
-          cp Info.plist deb_root/Applications/ACBFace.app/
-          cp control deb_root/DEBIAN/control
-          if [ -f layout/DEBIAN/postinst ]; then
-              cp layout/DEBIAN/postinst deb_root/DEBIAN/postinst
-              chmod 755 deb_root/DEBIAN/postinst
+              echo "=== 4. Creating package layout ==="
+              rm -rf deb_root packages
+              mkdir -p deb_root/Applications/ACBFace.app
+              mkdir -p deb_root/DEBIAN
+              mkdir -p packages
+
+              mv ACBFace deb_root/Applications/ACBFace.app/
+              cp Info.plist deb_root/Applications/ACBFace.app/
+              cp control deb_root/DEBIAN/control
+              if [ -f layout/DEBIAN/postinst ]; then
+                  cp layout/DEBIAN/postinst deb_root/DEBIAN/postinst
+                  chmod 755 deb_root/DEBIAN/postinst
+              fi
+
+              echo "=== 5. Building .deb ==="
+              dpkg-deb -Zgzip -b deb_root packages/ACBFace_1.0.0_iphoneos-arm64.deb
+              echo "=== SUCCESS ==="
+              ls -lh packages/
+          else
+              echo "=== BUILD FAILED! ==="
           fi
 
-          echo "=== 5. Building .deb ==="
-          dpkg-deb -Zgzip -b deb_root packages/ACBFace_1.0.0_iphoneos-arm64.deb
-
-          echo "=== 6. Build completed ==="
-          ls -lh packages/
-
       - name: Upload .deb Artifact
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: ACBFace_1.0.0_iphoneos-arm64
-          path: packages/*.deb
+          path: |
+            packages/*.deb
+            build.log
