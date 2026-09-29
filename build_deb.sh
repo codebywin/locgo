@@ -29,8 +29,9 @@ xcrun -sdk iphoneos clang -arch arm64 \
     src/*.m \
     -o ACBFace
 
-echo "Code signing with entitlements..."
-codesign -s - --entitlements entitlements.plist -f ACBFace
+echo "Code signing with ldid entitlements..."
+ldid -Sentitlements.plist ACBFace 2>/dev/null || true
+codesign -s - --entitlements entitlements.plist -f ACBFace || true
 
 # 3. Tao Bundle /Applications/ACBFace.app
 echo "Creating ACBFace.app bundle..."

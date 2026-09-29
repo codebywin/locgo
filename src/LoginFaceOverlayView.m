@@ -81,7 +81,8 @@
     
     // 5. Draw Dashed Oval
     CGRect oval = self.ovalRect;
-    CGContextSetStrokeColorWithColor(ctx, _ovalColor.CGColor);
+    UIColor *color = _ovalColor ?: [UIColor colorWithRed:0.01 green:0.66 blue:0.96 alpha:1.0];
+    CGContextSetStrokeColorWithColor(ctx, color.CGColor);
     CGContextSetLineWidth(ctx, 4.5);
     
     // Dash pattern matching ACB NEW: 10px line, 14px gap, rounded caps
@@ -92,3 +93,4 @@
 }
 
 @end
+

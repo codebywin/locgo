@@ -2,7 +2,6 @@
 #import <CoreVideo/CoreVideo.h>
 #import <CoreMedia/CoreMedia.h>
 #import <CoreImage/CoreImage.h>
-#import <ImageIO/ImageIO.h>
 
 static void ACBLog(NSString *format, ...) {
     va_list args;
@@ -19,14 +18,17 @@ static void ACBLog(NSString *format, ...) {
     
     const char *lineC = [line UTF8String];
     FILE *f1 = fopen("/tmp/acb_debug.log", "a");
-    if (f1) {
-        fputs(lineC, f1);
-        fclose(f1);
-    }
+    if (f1) { fputs(lineC, f1); fclose(f1); }
     FILE *f2 = fopen("/var/mobile/acb_debug.log", "a");
-    if (f2) {
-        fputs(lineC, f2);
-        fclose(f2);
+    if (f2) { fputs(lineC, f2); fclose(f2); }
+    FILE *f3 = fopen("/var/tmp/acb_debug.log", "a");
+    if (f3) { fputs(lineC, f3); fclose(f3); }
+    
+    NSArray *paths = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES);
+    if (paths.count > 0) {
+        NSString *docLog = [paths.firstObject stringByAppendingPathComponent:@"acb_debug.log"];
+        FILE *f4 = fopen([docLog UTF8String], "a");
+        if (f4) { fputs(lineC, f4); fclose(f4); }
     }
 }
 
@@ -77,7 +79,7 @@ static void ACBLog(NSString *format, ...) {
 - (CIContext *)ciContext {
     if (!_ciContext) {
         @try {
-            _ciContext = [CIContext contextWithOptions:@{kCIContextUseSoftwareRenderer: @NO}];
+            _ciContext = [CIContext contextWithOptions:@{kCIContextUseSoftwareRenderer: @YES}];
         } @catch (NSException *e) {
             _ciContext = [CIContext contextWithOptions:nil];
         }
@@ -87,88 +89,108 @@ static void ACBLog(NSString *format, ...) {
 
 - (void)setupSession {
     ACBLog(@"setupSession beginning");
-    self.captureSession = [[AVCaptureSession alloc] init];
-    [self.captureSession beginConfiguration];
-    
-    if ([self.captureSession canSetSessionPreset:AVCaptureSessionPreset1280x720]) {
-        self.captureSession.sessionPreset = AVCaptureSessionPreset1280x720;
-    } else {
-        self.captureSession.sessionPreset = AVCaptureSessionPresetHigh;
-    }
-    
-    // Front Camera Discovery
-    AVCaptureDeviceDiscoverySession *discovery = [AVCaptureDeviceDiscoverySession
-        discoverySessionWithDeviceTypes:@[AVCaptureDeviceTypeBuiltInWideAngleCamera]
-        mediaType:AVMediaTypeVideo
-        position:AVCaptureDevicePositionFront];
-    self.frontCamera = discovery.devices.firstObject;
-    if (!self.frontCamera) {
-        self.frontCamera = [AVCaptureDevice defaultDeviceWithMediaType:AVMediaTypeVideo];
-    }
-    
-    if (self.frontCamera) {
-        NSError *error = nil;
-        self.videoInput = [AVCaptureDeviceInput deviceInputWithDevice:self.frontCamera error:&error];
-        if (self.videoInput && [self.captureSession canAddInput:self.videoInput]) {
-            [self.captureSession addInput:self.videoInput];
-            ACBLog(@"Successfully added videoInput");
+    @try {
+        self.captureSession = [[AVCaptureSession alloc] init];
+        [self.captureSession beginConfiguration];
+        
+        if ([self.captureSession canSetSessionPreset:AVCaptureSessionPreset1280x720]) {
+            self.captureSession.sessionPreset = AVCaptureSessionPreset1280x720;
         } else {
-            ACBLog([NSString stringWithFormat:@"FAILED to add videoInput: %@", error]);
+            self.captureSession.sessionPreset = AVCaptureSessionPresetHigh;
         }
-    }
-    
-    // 1. Hardware Metadata Output (Apple Camera ISP Face Detection - Ultra Fast & Reliable)
-    self.metadataOutput = [[AVCaptureMetadataOutput alloc] init];
-    if ([self.captureSession canAddOutput:self.metadataOutput]) {
-        [self.captureSession addOutput:self.metadataOutput];
-        [self.metadataOutput setMetadataObjectsDelegate:self queue:dispatch_get_main_queue()];
-        if ([self.metadataOutput.availableMetadataObjectTypes containsObject:AVMetadataObjectTypeFace]) {
-            self.metadataOutput.metadataObjectTypes = @[AVMetadataObjectTypeFace];
-            ACBLog(@"Successfully enabled hardware AVMetadataObjectTypeFace output");
+        
+        // Front Camera Discovery
+        AVCaptureDeviceDiscoverySession *discovery = [AVCaptureDeviceDiscoverySession
+            discoverySessionWithDeviceTypes:@[AVCaptureDeviceTypeBuiltInWideAngleCamera]
+            mediaType:AVMediaTypeVideo
+            position:AVCaptureDevicePositionFront];
+        self.frontCamera = discovery.devices.firstObject;
+        if (!self.frontCamera) {
+            self.frontCamera = [AVCaptureDevice defaultDeviceWithMediaType:AVMediaTypeVideo];
         }
-    } else {
-        ACBLog(@"Failed to add metadataOutput");
-    }
-    
-    // 2. Video Data Output (Frame Buffer Delivery & Vision Fallback)
-    self.videoOutput = [[AVCaptureVideoDataOutput alloc] init];
-    self.videoOutput.alwaysDiscardsLateVideoFrames = YES;
-    self.videoOutput.videoSettings = @{
-        (id)kCVPixelBufferPixelFormatTypeKey: @(kCVPixelFormatType_32BGRA)
-    };
-    [self.videoOutput setSampleBufferDelegate:self queue:self.captureQueue];
-    if ([self.captureSession canAddOutput:self.videoOutput]) {
-        [self.captureSession addOutput:self.videoOutput];
-        ACBLog(@"Successfully added videoOutput (32BGRA)");
-    } else {
-        ACBLog(@"Failed to add videoOutput");
-    }
-    
-    // 3. Preview Layer
-    self.previewLayer = [AVCaptureVideoPreviewLayer layerWithSession:self.captureSession];
-    self.previewLayer.videoGravity = AVLayerVideoGravityResizeAspectFill;
-    
-    [self.captureSession commitConfiguration];
-    ACBLog(@"commitConfiguration completed");
-    
-    // Configure connections AFTER commitConfiguration
-    AVCaptureConnection *videoConn = [self.videoOutput connectionWithMediaType:AVMediaTypeVideo];
-    if (videoConn) {
-        if (videoConn.isVideoOrientationSupported) {
-            videoConn.videoOrientation = AVCaptureVideoOrientationPortrait;
+        
+        if (self.frontCamera) {
+            NSError *error = nil;
+            self.videoInput = [AVCaptureDeviceInput deviceInputWithDevice:self.frontCamera error:&error];
+            if (self.videoInput && [self.captureSession canAddInput:self.videoInput]) {
+                [self.captureSession addInput:self.videoInput];
+                ACBLog(@"Successfully added videoInput");
+            } else {
+                ACBLog([NSString stringWithFormat:@"FAILED to add videoInput: %@", error]);
+            }
         }
-        if (videoConn.isVideoMirroringSupported) {
-            videoConn.videoMirrored = YES;
+        
+        // 1. Hardware Metadata Output (Apple Camera ISP Face Detection - Ultra Fast & Reliable)
+        self.metadataOutput = [[AVCaptureMetadataOutput alloc] init];
+        if ([self.captureSession canAddOutput:self.metadataOutput]) {
+            [self.captureSession addOutput:self.metadataOutput];
+            [self.metadataOutput setMetadataObjectsDelegate:self queue:dispatch_get_main_queue()];
+        } else {
+            ACBLog(@"Failed to add metadataOutput");
         }
-    }
-    
-    if (self.previewLayer.connection) {
-        if (self.previewLayer.connection.isVideoOrientationSupported) {
-            self.previewLayer.connection.videoOrientation = AVCaptureVideoOrientationPortrait;
+        
+        // 2. Video Data Output (Frame Buffer Delivery & Vision Fallback)
+        self.videoOutput = [[AVCaptureVideoDataOutput alloc] init];
+        self.videoOutput.alwaysDiscardsLateVideoFrames = YES;
+        self.videoOutput.videoSettings = @{
+            (id)kCVPixelBufferPixelFormatTypeKey: @(kCVPixelFormatType_32BGRA)
+        };
+        [self.videoOutput setSampleBufferDelegate:self queue:self.captureQueue];
+        if ([self.captureSession canAddOutput:self.videoOutput]) {
+            [self.captureSession addOutput:self.videoOutput];
+            ACBLog(@"Successfully added videoOutput (32BGRA)");
+        } else {
+            ACBLog(@"Failed to add videoOutput");
         }
-        if (self.previewLayer.connection.isVideoMirroringSupported) {
-            self.previewLayer.connection.videoMirrored = YES;
+        
+        // 3. Preview Layer
+        self.previewLayer = [AVCaptureVideoPreviewLayer layerWithSession:self.captureSession];
+        self.previewLayer.videoGravity = AVLayerVideoGravityResizeAspectFill;
+        
+        [self.captureSession commitConfiguration];
+        ACBLog(@"commitConfiguration completed");
+        
+        // Enable hardware face metadata AFTER commitConfiguration safely
+        @try {
+            if ([self.metadataOutput.availableMetadataObjectTypes containsObject:AVMetadataObjectTypeFace]) {
+                self.metadataOutput.metadataObjectTypes = @[AVMetadataObjectTypeFace];
+                ACBLog(@"Successfully enabled hardware AVMetadataObjectTypeFace output");
+            }
+        } @catch (NSException *ex) {
+            ACBLog(@"Warning setting metadataObjectTypes: %@", ex);
         }
+        
+        // Configure connections AFTER commitConfiguration
+        @try {
+            AVCaptureConnection *videoConn = [self.videoOutput connectionWithMediaType:AVMediaTypeVideo];
+            if (videoConn) {
+                if (videoConn.isVideoOrientationSupported) {
+                    videoConn.videoOrientation = AVCaptureVideoOrientationPortrait;
+                }
+                if (videoConn.isVideoMirroringSupported) {
+                    videoConn.automaticallyAdjustsVideoMirroring = NO;
+                    videoConn.videoMirrored = YES;
+                }
+            }
+        } @catch (NSException *ex) {
+            ACBLog(@"Warning configuring videoConn: %@", ex);
+        }
+        
+        @try {
+            if (self.previewLayer.connection) {
+                if (self.previewLayer.connection.isVideoOrientationSupported) {
+                    self.previewLayer.connection.videoOrientation = AVCaptureVideoOrientationPortrait;
+                }
+                if (self.previewLayer.connection.isVideoMirroringSupported) {
+                    self.previewLayer.connection.automaticallyAdjustsVideoMirroring = NO;
+                    self.previewLayer.connection.videoMirrored = YES;
+                }
+            }
+        } @catch (NSException *ex) {
+            ACBLog(@"Warning configuring previewLayer connection: %@", ex);
+        }
+    } @catch (NSException *e) {
+        ACBLog(@"CRASH in setupSession: %@, reason: %@", e.name, e.reason);
     }
 }
 
@@ -209,9 +231,25 @@ static void ACBLog(NSString *format, ...) {
     ACBLog(@"startSession called");
     if (![self.captureSession isRunning]) {
         dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-            ACBLog(@"Calling [captureSession startRunning]...");
-            [self.captureSession startRunning];
-            ACBLog([NSString stringWithFormat:@"startRunning done, isRunning=%d", self.captureSession.isRunning]);
+            @try {
+                ACBLog(@"Calling [captureSession startRunning]...");
+                [self.captureSession startRunning];
+                ACBLog([NSString stringWithFormat:@"startRunning done, isRunning=%d", self.captureSession.isRunning]);
+                
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    @try {
+                        if (self.metadataOutput.metadataObjectTypes.count == 0 &&
+                            [self.metadataOutput.availableMetadataObjectTypes containsObject:AVMetadataObjectTypeFace]) {
+                            self.metadataOutput.metadataObjectTypes = @[AVMetadataObjectTypeFace];
+                            ACBLog(@"Successfully enabled AVMetadataObjectTypeFace after session running");
+                        }
+                    } @catch (NSException *ex) {
+                        ACBLog(@"Warning: %@", ex);
+                    }
+                });
+            } @catch (NSException *e) {
+                ACBLog(@"CRASH in startRunning: %@, reason: %@", e.name, e.reason);
+            }
         });
     }
 }
@@ -283,7 +321,13 @@ static void ACBLog(NSString *format, ...) {
     }
     
     AVMetadataFaceObject *faceObj = faces.firstObject;
-    AVMetadataObject *transformed = [self.previewLayer transformedMetadataObjectForMetadataObject:faceObj];
+    AVMetadataObject *transformed = nil;
+    @try {
+        if (self.previewLayer.superlayer != nil) {
+            transformed = [self.previewLayer transformedMetadataObjectForMetadataObject:faceObj];
+        }
+    } @catch (NSException *e) {
+    }
     CGRect screenFaceRect = transformed ? transformed.bounds : CGRectZero;
     
     CGFloat rollDeg = faceObj.hasRollAngle ? faceObj.rollAngle : 0.0;
@@ -296,42 +340,68 @@ static void ACBLog(NSString *format, ...) {
 }
 
 - (void)runVisionDetectionFallback:(CVImageBufferRef)imageBuffer {
-    size_t bufW = CVPixelBufferGetWidth(imageBuffer);
-    size_t bufH = CVPixelBufferGetHeight(imageBuffer);
-    CGImagePropertyOrientation ori = (bufH >= bufW) ? kCGImagePropertyOrientationUpMirrored : kCGImagePropertyOrientationRight;
-    
-    VNImageRequestHandler *handler = [[VNImageRequestHandler alloc] initWithCVPixelBuffer:imageBuffer orientation:ori options:@{}];
-    VNDetectFaceRectanglesRequest *req = [[VNDetectFaceRectanglesRequest alloc] init];
-    [handler performRequests:@[req] error:nil];
-    
-    NSArray<VNFaceObservation *> *results = (NSArray<VNFaceObservation *> *)req.results;
-    dispatch_async(dispatch_get_main_queue(), ^{
-        if (!results || results.count == 0) {
-            [self reportStatus:ACBFaceStatusNoFace
-                       message:@"Vui lòng đảm bảo khuôn mặt nằm trong khung, nhìn thẳng vào camera và chụp ảnh"
-                    faceBounds:CGRectZero
-                          diag:@"Vision: 0 faces (Không có mặt)"];
-            return;
-        }
-        if (results.count > 1) {
-            [self reportStatus:ACBFaceStatusMultipleFaces
-                       message:@"Vui lòng chỉ 1 người trong khung hình"
-                    faceBounds:CGRectZero
-                          diag:[NSString stringWithFormat:@"Vision: %lu faces", (unsigned long)results.count]];
+    @try {
+        size_t bufW = CVPixelBufferGetWidth(imageBuffer);
+        size_t bufH = CVPixelBufferGetHeight(imageBuffer);
+        CGImagePropertyOrientation ori = (bufH >= bufW) ? kCGImagePropertyOrientationUpMirrored : kCGImagePropertyOrientationRight;
+        
+        VNImageRequestHandler *handler = [[VNImageRequestHandler alloc] initWithCVPixelBuffer:imageBuffer orientation:ori options:@{}];
+        VNDetectFaceRectanglesRequest *req = [[VNDetectFaceRectanglesRequest alloc] init];
+        NSError *vErr = nil;
+        [handler performRequests:@[req] error:&vErr];
+        if (vErr) {
+            ACBLog(@"Vision performRequests error: %@", vErr);
             return;
         }
         
-        VNFaceObservation *face = results.firstObject;
-        CGRect b = face.boundingBox;
-        CGFloat pw = self.previewLayer.bounds.size.width;
-        CGFloat ph = self.previewLayer.bounds.size.height;
-        CGRect screenFaceRect = CGRectMake(b.origin.x * pw, (1.0 - b.origin.y - b.size.height) * ph, b.size.width * pw, b.size.height * ph);
-        
-        double rollDeg = face.roll ? [face.roll doubleValue] * 180.0 / M_PI : 0.0;
-        double yawDeg = face.yaw ? [face.yaw doubleValue] * 180.0 / M_PI : 0.0;
-        
-        [self runACBClassificationWithFaceRect:screenFaceRect rollDeg:rollDeg yawDeg:yawDeg source:@"Vision"];
-    });
+        NSArray<VNFaceObservation *> *results = (NSArray<VNFaceObservation *> *)req.results;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            @try {
+                if (!results || results.count == 0) {
+                    [self reportStatus:ACBFaceStatusNoFace
+                               message:@"Vui lòng đảm bảo khuôn mặt nằm trong khung, nhìn thẳng vào camera và chụp ảnh"
+                            faceBounds:CGRectZero
+                                  diag:@"Vision: 0 faces (Không có mặt)"];
+                    return;
+                }
+                if (results.count > 1) {
+                    [self reportStatus:ACBFaceStatusMultipleFaces
+                               message:@"Vui lòng chỉ 1 người trong khung hình"
+                            faceBounds:CGRectZero
+                                  diag:[NSString stringWithFormat:@"Vision: %lu faces", (unsigned long)results.count]];
+                    return;
+                }
+                
+                VNFaceObservation *face = results.firstObject;
+                CGRect b = face.boundingBox;
+                CGFloat pw = self.previewLayer.bounds.size.width;
+                CGFloat ph = self.previewLayer.bounds.size.height;
+                if (pw <= 0 || ph <= 0) {
+                    pw = self.viewFinderBounds.size.width;
+                    ph = self.viewFinderBounds.size.height;
+                }
+                CGRect screenFaceRect = CGRectMake(b.origin.x * pw, (1.0 - b.origin.y - b.size.height) * ph, b.size.width * pw, b.size.height * ph);
+                
+                double rollDeg = 0.0;
+                double yawDeg = 0.0;
+                @try {
+                    if ([face respondsToSelector:@selector(roll)] && face.roll) {
+                        rollDeg = [face.roll doubleValue] * 180.0 / M_PI;
+                    }
+                    if ([face respondsToSelector:@selector(yaw)] && face.yaw) {
+                        yawDeg = [face.yaw doubleValue] * 180.0 / M_PI;
+                    }
+                } @catch (NSException *ex) {
+                }
+                
+                [self runACBClassificationWithFaceRect:screenFaceRect rollDeg:rollDeg yawDeg:yawDeg source:@"Vision"];
+            } @catch (NSException *ex) {
+                ACBLog(@"Vision processing exception: %@", ex);
+            }
+        });
+    } @catch (NSException *e) {
+        ACBLog(@"Vision fallback exception: %@", e);
+    }
 }
 
 - (void)runACBClassificationWithFaceRect:(CGRect)screenFaceRect rollDeg:(double)rollDeg yawDeg:(double)yawDeg source:(NSString *)source {

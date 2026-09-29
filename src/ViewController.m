@@ -58,37 +58,49 @@
     [super viewDidLoad];
     self.view.backgroundColor = [UIColor whiteColor];
     
-    if (!self.cardNumber || self.cardNumber.length == 0) {
-        self.cardNumber = @"18601771";
+    @try {
+        if (!self.cardNumber || self.cardNumber.length == 0) {
+            self.cardNumber = @"18601771";
+        }
+        self.userName = @"NGUYEN VAN A";
+        self.bankType = @"ACB";
+        
+        self.totalRounds = 10;
+        self.currentRound = 1;
+        self.consecutiveOKCount = 0;
+        self.isCapturingRound = NO;
+        self.isTransitioningRound = NO;
+        
+        [self prepareNewSessionDirectory];
+        
+        [self setupHeaderUI];
+        [self setupViewFinder];
+        [self setupBottomControls];
+        [self setupUploadDialog];
+        
+        self.uploader = [[ACBUploader alloc] init];
+        self.uploader.delegate = self;
+    } @catch (NSException *e) {
+        NSLog(@"[ACBFace] CRASH in viewDidLoad: %@ - %@", e.name, e.reason);
     }
-    self.userName = @"NGUYEN VAN A";
-    self.bankType = @"ACB";
-    
-    self.totalRounds = 10;
-    self.currentRound = 1;
-    self.consecutiveOKCount = 0;
-    self.isCapturingRound = NO;
-    self.isTransitioningRound = NO;
-    
-    [self prepareNewSessionDirectory];
-    
-    [self setupHeaderUI];
-    [self setupViewFinder];
-    [self setupBottomControls];
-    [self setupUploadDialog];
-    
-    self.uploader = [[ACBUploader alloc] init];
-    self.uploader.delegate = self;
 }
 
 - (void)viewDidAppear:(BOOL)animated {
     [super viewDidAppear:animated];
-    [self.cameraManager requestPermissionAndStart];
+    @try {
+        [self.cameraManager requestPermissionAndStart];
+    } @catch (NSException *e) {
+        NSLog(@"[ACBFace] CRASH in viewDidAppear: %@ - %@", e.name, e.reason);
+    }
 }
 
 - (void)viewWillDisappear:(BOOL)animated {
     [super viewWillDisappear:animated];
-    [self.cameraManager stopSession];
+    @try {
+        [self.cameraManager stopSession];
+    } @catch (NSException *e) {
+        NSLog(@"[ACBFace] CRASH in viewWillDisappear: %@ - %@", e.name, e.reason);
+    }
 }
 
 - (void)prepareNewSessionDirectory {
@@ -499,14 +511,14 @@
 
 #pragma mark - ACBUploaderDelegate
 
-- (void)uploaderDidProgress:(float)progress currentChunk:(NSInteger)current totalChunks:(NSInteger)total {
+- (void)uploaderDidUpdateProgress:(float)progress uploaded:(NSInteger)uploaded total:(NSInteger)total {
     dispatch_async(dispatch_get_main_queue(), ^{
         self.uploadProgressBar.progress = progress;
-        self.uploadChunkLabel.text = [NSString stringWithFormat:@"Đang gửi phần %ld / %ld", (long)current, (long)total];
+        self.uploadChunkLabel.text = [NSString stringWithFormat:@"Đang gửi phần %ld / %ld", (long)uploaded, (long)total];
     });
 }
 
-- (void)uploaderDidFinishSuccessWithResponse:(NSDictionary *)response {
+- (void)uploaderDidFinishWithResult:(NSDictionary *)result {
     dispatch_async(dispatch_get_main_queue(), ^{
         self.uploadDialogOverlay.hidden = YES;
         [self.uploadSpinner stopAnimating];
@@ -568,3 +580,4 @@
 }
 
 @end
+

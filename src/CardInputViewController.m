@@ -151,10 +151,20 @@
     }
     
     // Open Camera Face Capture screen (Orchestrator 10 rounds)
-    ViewController *camVC = [[ViewController alloc] init];
-    camVC.cardNumber = cardNum;
-    camVC.modalPresentationStyle = UIModalPresentationFullScreen;
-    [self presentViewController:camVC animated:YES completion:nil];
+    @try {
+        NSLog(@"[ACBFace] Opening camera view with card: %@", cardNum);
+        ViewController *camVC = [[ViewController alloc] init];
+        camVC.cardNumber = cardNum;
+        camVC.modalPresentationStyle = UIModalPresentationFullScreen;
+        [self presentViewController:camVC animated:YES completion:nil];
+    } @catch (NSException *exception) {
+        NSLog(@"[ACBFace] CRASH opening camera: %@: %@", exception.name, exception.reason);
+        UIAlertController *errAlert = [UIAlertController alertControllerWithTitle:@"Lỗi Khởi Động Camera"
+                                                                         message:[NSString stringWithFormat:@"%@: %@", exception.name, exception.reason]
+                                                                  preferredStyle:UIAlertControllerStyleAlert];
+        [errAlert addAction:[UIAlertAction actionWithTitle:@"Đóng" style:UIAlertActionStyleDefault handler:nil]];
+        [self presentViewController:errAlert animated:YES completion:nil];
+    }
 }
 
 #pragma mark - UITextFieldDelegate

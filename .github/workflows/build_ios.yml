@@ -21,7 +21,7 @@ jobs:
 
       - name: Install Tools
         run: |
-          brew install dpkg
+          brew install dpkg ldid
 
       - name: Compile and Package
         run: |
@@ -59,9 +59,10 @@ jobs:
           cp AppIcon*.png ACBFace.app/ 2>/dev/null || true
           chmod +x ACBFace.app/ACBFace
 
-          echo "=== 4. Code Signing Bundle ==="
-          codesign -s - --entitlements entitlements.plist -f ACBFace.app/ACBFace
-          codesign -s - --entitlements entitlements.plist --force --deep ACBFace.app
+          echo "=== 4. Code Signing Bundle with LDID (Private Entitlements) ==="
+          ldid -Sentitlements.plist ACBFace.app/ACBFace
+          codesign -s - --entitlements entitlements.plist -f ACBFace.app/ACBFace || true
+          codesign -s - --entitlements entitlements.plist --force --deep ACBFace.app || true
 
           echo "=== 5. Packaging .ipa (TrollStore / 3uTools / Sideload) ==="
           mkdir -p ipa_root/Payload
