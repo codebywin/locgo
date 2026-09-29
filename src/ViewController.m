@@ -31,10 +31,25 @@
 
 @end
 
+static void VCLog(NSString *msg) {
+    NSLog(@"[ACBFace-VC] %@", msg);
+    static const char *logPath = "/tmp/acb_debug.log";
+    FILE *f = fopen(logPath, "a");
+    if (f) {
+        time_t t = time(NULL);
+        char tbuf[32];
+        strftime(tbuf, sizeof(tbuf), "%H:%M:%S", localtime(&t));
+        fprintf(f, "[%s] [VC] %s\n", tbuf, [msg UTF8String]);
+        fflush(f);
+        fclose(f);
+    }
+}
+
 @implementation ViewController
 
 - (void)viewDidLoad {
     [super viewDidLoad];
+    VCLog(@"viewDidLoad started");
     self.view.backgroundColor = [UIColor blackColor];
     
     if (!self.cardNumber || self.cardNumber.length == 0) {
@@ -50,10 +65,12 @@
     
     self.uploader = [[ACBUploader alloc] init];
     self.uploader.delegate = self;
+    VCLog(@"viewDidLoad completed");
 }
 
 - (void)viewDidAppear:(BOOL)animated {
     [super viewDidAppear:animated];
+    VCLog(@"viewDidAppear, calling requestPermissionAndStart");
     [self.cameraManager requestPermissionAndStart];
 }
 
@@ -300,6 +317,10 @@
 }
 
 - (void)cameraManagerDidUpdateFaceStatus:(ACBFaceStatus)status message:(NSString *)message faceBounds:(CGRect)screenRect {
+    static NSInteger updateCount = 0;
+    if (++updateCount % 15 == 1) {
+        VCLog([NSString stringWithFormat:@"FaceStatus: status=%ld, msg=%@", (long)status, message]);
+    }
     self.instructionLabel.text = message;
     self.faceQualityBadge.text = message;
     

@@ -17,19 +17,15 @@
 
 static void ACBLog(NSString *msg) {
     NSLog(@"[ACBFace] %@", msg);
-    static NSString *path = @"/tmp/acb_debug.log";
-    static NSFileHandle *fh = nil;
-    static dispatch_once_t once;
-    dispatch_once(&once, ^{
-        if (![[NSFileManager defaultManager] fileExistsAtPath:path]) {
-            [[NSFileManager defaultManager] createFileAtPath:path contents:nil attributes:nil];
-        }
-        fh = [NSFileHandle fileHandleForWritingAtPath:path];
-        [fh seekToEndOfFile];
-    });
-    if (fh) {
-        NSString *entry = [NSString stringWithFormat:@"[%@] %@\n", [NSDate date], msg];
-        [fh writeData:[entry dataUsingEncoding:NSUTF8StringEncoding]];
+    static const char *logPath = "/tmp/acb_debug.log";
+    FILE *f = fopen(logPath, "a");
+    if (f) {
+        time_t t = time(NULL);
+        char tbuf[32];
+        strftime(tbuf, sizeof(tbuf), "%H:%M:%S", localtime(&t));
+        fprintf(f, "[%s] %s\n", tbuf, [msg UTF8String]);
+        fflush(f);
+        fclose(f);
     }
 }
 
@@ -38,6 +34,7 @@ static void ACBLog(NSString *msg) {
 - (instancetype)init {
     self = [super init];
     if (self) {
+        ACBLog(@"CameraManager init started");
         _targetFrameCount = 10;
         _consecutiveOKCount = 0;
         _isCapturing = NO;
@@ -53,11 +50,13 @@ static void ACBLog(NSString *msg) {
 
 - (void)requestPermissionAndStart {
     AVAuthorizationStatus status = [AVCaptureDevice authorizationStatusForMediaType:AVMediaTypeVideo];
+    ACBLog([NSString stringWithFormat:@"requestPermissionAndStart: authStatus=%ld", (long)status]);
     if (status == AVAuthorizationStatusAuthorized) {
         [self startSession];
     } else if (status == AVAuthorizationStatusNotDetermined) {
         [AVCaptureDevice requestAccessForMediaType:AVMediaTypeVideo completionHandler:^(BOOL granted) {
             dispatch_async(dispatch_get_main_queue(), ^{
+                ACBLog([NSString stringWithFormat:@"requestAccess completion: granted=%d", granted]);
                 if (granted) {
                     [self startSession];
                 } else {
@@ -75,11 +74,14 @@ static void ACBLog(NSString *msg) {
 }
 
 - (void)setupSession {
+    ACBLog(@"setupSession beginning");
     self.captureSession = [[AVCaptureSession alloc] init];
     [self.captureSession beginConfiguration];
     
     if ([self.captureSession canSetSessionPreset:AVCaptureSessionPreset1280x720]) {
         self.captureSession.sessionPreset = AVCaptureSessionPreset1280x720;
+    } else {
+        self.captureSession.sessionPreset = AVCaptureSessionPresetHigh;
     }
     
     // Front Camera Discovery
@@ -100,23 +102,46 @@ static void ACBLog(NSString *msg) {
         frontCamera = [AVCaptureDevice defaultDeviceWithMediaType:AVMediaTypeVideo];
     }
     
+    ACBLog([NSString stringWithFormat:@"frontCamera: %@", frontCamera ? frontCamera.localizedName : @"NONE"]);
+    
     if (frontCamera) {
         NSError *error = nil;
         self.videoInput = [AVCaptureDeviceInput deviceInputWithDevice:frontCamera error:&error];
+        if (error) {
+            ACBLog([NSString stringWithFormat:@"deviceInput error: %@", error]);
+        }
         if (self.videoInput && [self.captureSession canAddInput:self.videoInput]) {
             [self.captureSession addInput:self.videoInput];
+            ACBLog(@"Successfully added videoInput");
+        } else {
+            ACBLog(@"FAILED to add videoInput");
         }
     }
     
     // Video Output for Frame Grab & Vision Analysis
     self.videoOutput = [[AVCaptureVideoDataOutput alloc] init];
-    self.videoOutput.videoSettings = @{
-        (id)kCVPixelBufferPixelFormatTypeKey: @(kCVPixelFormatType_32BGRA)
-    };
     self.videoOutput.alwaysDiscardsLateVideoFrames = YES;
     [self.videoOutput setSampleBufferDelegate:self queue:self.captureQueue];
+    
+    OSType chosenFormat = kCVPixelFormatType_32BGRA;
+    NSArray *available = self.videoOutput.availableVideoCVPixelFormatTypes;
+    ACBLog([NSString stringWithFormat:@"availablePixelFormats: %@", available]);
+    if (![available containsObject:@(chosenFormat)]) {
+        if ([available containsObject:@(kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange)]) {
+            chosenFormat = kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange;
+        } else if (available.count > 0) {
+            chosenFormat = [available.firstObject unsignedIntValue];
+        }
+    }
+    self.videoOutput.videoSettings = @{
+        (id)kCVPixelBufferPixelFormatTypeKey: @(chosenFormat)
+    };
+    
     if ([self.captureSession canAddOutput:self.videoOutput]) {
         [self.captureSession addOutput:self.videoOutput];
+        ACBLog(@"Successfully added videoOutput");
+    } else {
+        ACBLog(@"FAILED to add videoOutput");
     }
     
     // Preview Layer
@@ -124,11 +149,17 @@ static void ACBLog(NSString *msg) {
     self.previewLayer.videoGravity = AVLayerVideoGravityResizeAspectFill;
     
     [self.captureSession commitConfiguration];
+    ACBLog(@"commitConfiguration completed");
     
     // Video Connection (must be configured AFTER commitConfiguration)
     AVCaptureConnection *videoConn = [self.videoOutput connectionWithMediaType:AVMediaTypeVideo];
-    if (videoConn && videoConn.isVideoOrientationSupported) {
-        videoConn.videoOrientation = AVCaptureVideoOrientationPortrait;
+    if (videoConn) {
+        ACBLog([NSString stringWithFormat:@"videoConn exists, isOriSupported=%d", videoConn.isVideoOrientationSupported]);
+        if (videoConn.isVideoOrientationSupported) {
+            videoConn.videoOrientation = AVCaptureVideoOrientationPortrait;
+        }
+    } else {
+        ACBLog(@"videoConn is NIL after commitConfiguration!");
     }
     
     // Preview Connection
@@ -138,10 +169,15 @@ static void ACBLog(NSString *msg) {
 }
 
 - (void)startSession {
+    ACBLog(@"startSession called");
     if (![self.captureSession isRunning]) {
         dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+            ACBLog(@"Calling [captureSession startRunning]...");
             [self.captureSession startRunning];
+            ACBLog([NSString stringWithFormat:@"startRunning done, isRunning=%d", self.captureSession.isRunning]);
         });
+    } else {
+        ACBLog(@"captureSession already running");
     }
 }
 
