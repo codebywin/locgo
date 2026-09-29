@@ -35,6 +35,8 @@ jobs:
               -miphoneos-version-min=14.0 \
               -fobjc-arc \
               -isysroot "$SDK_PATH" \
+              -Wno-deprecated-declarations \
+              -Wno-nullability-completeness \
               -framework UIKit \
               -framework AVFoundation \
               -framework CoreGraphics \

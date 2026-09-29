@@ -1,5 +1,6 @@
 #import <Foundation/Foundation.h>
 #import <AVFoundation/AVFoundation.h>
+#import <CoreImage/CoreImage.h>
 #import <UIKit/UIKit.h>
 
 @protocol CameraManagerDelegate <NSObject>
