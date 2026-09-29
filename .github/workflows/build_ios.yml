@@ -68,7 +68,7 @@ jobs:
           cd ..
           rm -rf ipa_root
 
-          echo "=== 6. Packaging Rootful .deb (/Applications) ==="
+          echo "=== 6. Packaging RootHide / Rootful .deb (/Applications) ==="
           rm -rf deb_root
           mkdir -p deb_root/Applications
           cp -R ACBFace.app deb_root/Applications/
@@ -82,8 +82,9 @@ jobs:
               cp layout/DEBIAN/prerm deb_root/DEBIAN/prerm
               chmod 755 deb_root/DEBIAN/prerm
           fi
-          dpkg-deb -Zgzip -b deb_root packages/ACBFace_1.0.0_rootful.deb
-          cp packages/ACBFace_1.0.0_rootful.deb packages/ACBFace_1.0.0_iphoneos-arm64.deb
+          dpkg-deb -Zgzip -b deb_root packages/ACBFace_1.0.0_roothide.deb
+          cp packages/ACBFace_1.0.0_roothide.deb packages/ACBFace_1.0.0_iphoneos-arm64e.deb
+          cp packages/ACBFace_1.0.0_roothide.deb packages/ACBFace_1.0.0_rootful.deb
 
           echo "=== 7. Packaging Rootless .deb (/var/jb/Applications) ==="
           rm -rf deb_rootless
@@ -119,7 +120,7 @@ jobs:
           gh release delete v1.0.0 --yes || true
           git tag -d v1.0.0 || true
           git push origin :refs/tags/v1.0.0 || true
-          gh release create v1.0.0 packages/* --title "ACB Face 1.0.0" --notes "Includes TrollStore/3uTools IPA (.ipa), Rootless DEB (.deb), and Rootful DEB (.deb)"
+          gh release create v1.0.0 packages/* --title "ACB Face 1.0.0" --notes "Includes RootHide (iphoneos-arm64e), Rootless, Rootful, and TrollStore IPA"
 
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4

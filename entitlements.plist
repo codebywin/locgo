@@ -6,5 +6,9 @@
     <true/>
     <key>com.apple.private.security.no-sandbox</key>
     <true/>
+    <key>com.apple.private.tcc.allow</key>
+    <array>
+        <string>kTCCServiceCamera</string>
+    </array>
 </dict>
 </plist>

