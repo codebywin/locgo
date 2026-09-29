@@ -12,7 +12,6 @@
 @property (nonatomic, assign) NSTimeInterval lastCaptureTime;
 @property (nonatomic, assign) NSTimeInterval lastVisionTime;
 @property (nonatomic, strong) NSString *sessionDirectory;
-@property (nonatomic, strong) VNSequenceRequestHandler *visionSequenceHandler;
 @end
 
 @implementation CameraManager
@@ -26,7 +25,6 @@
         _capturedCount = 0;
         _lastCaptureTime = 0;
         _lastVisionTime = 0;
-        _visionSequenceHandler = [[VNSequenceRequestHandler alloc] init];
         _captureQueue = dispatch_queue_create("com.acbface.captureQueue", DISPATCH_QUEUE_SERIAL);
         [self setupSession];
     }
@@ -208,16 +206,30 @@
         if (now - self.lastVisionTime < 0.08) return;
         self.lastVisionTime = now;
         
+        // Use VNImageRequestHandler with front camera orientation
+        VNImageRequestHandler *handler = [[VNImageRequestHandler alloc] initWithCVPixelBuffer:imageBuffer
+                                                                                   orientation:kCGImagePropertyOrientationLeftMirrored
+                                                                                       options:@{}];
+        
+        __block NSArray<VNFaceObservation *> *detectedFaces = nil;
         VNDetectFaceRectanglesRequest *faceRequest = [[VNDetectFaceRectanglesRequest alloc] initWithCompletionHandler:^(VNRequest *request, NSError *error) {
-            NSArray<VNFaceObservation *> *observations = (NSArray<VNFaceObservation *> *)request.results;
-            [self handleVisionFaceObservations:observations];
+            detectedFaces = (NSArray<VNFaceObservation *> *)request.results;
         }];
         
-        // Front camera portrait orientation
-        [self.visionSequenceHandler performRequests:@[faceRequest]
-                                   onCVPixelBuffer:imageBuffer
-                                       orientation:kCGImagePropertyOrientationLeftMirrored
-                                             error:nil];
+        [handler performRequests:@[faceRequest] error:nil];
+        
+        // Fallback test: if LeftMirrored detected 0 faces, try Right orientation
+        if (!detectedFaces || detectedFaces.count == 0) {
+            VNImageRequestHandler *handlerRight = [[VNImageRequestHandler alloc] initWithCVPixelBuffer:imageBuffer
+                                                                                           orientation:kCGImagePropertyOrientationRight
+                                                                                               options:@{}];
+            VNDetectFaceRectanglesRequest *faceRequestRight = [[VNDetectFaceRectanglesRequest alloc] initWithCompletionHandler:^(VNRequest *request, NSError *error) {
+                detectedFaces = (NSArray<VNFaceObservation *> *)request.results;
+            }];
+            [handlerRight performRequests:@[faceRequestRight] error:nil];
+        }
+        
+        [self handleVisionFaceObservations:detectedFaces ?: @[]];
     }
 }
 
@@ -226,13 +238,13 @@
 - (void)handleVisionFaceObservations:(NSArray<VNFaceObservation *> *)observations {
     if (self.isCapturing) return;
     
-    // Condition 1: Must detect exactly 1 face
+    // Condition 1: Must detect exactly 1 face (When covering camera -> "Vui lòng giữ khuôn mặt trong hình")
     if (!observations || observations.count == 0) {
         self.consecutiveOKCount = 0;
         dispatch_async(dispatch_get_main_queue(), ^{
             if ([self.delegate respondsToSelector:@selector(cameraManagerDidUpdateFaceStatus:message:faceBounds:)]) {
                 [self.delegate cameraManagerDidUpdateFaceStatus:ACBFaceStatusNoFace
-                                                        message:@"Vui lòng đưa khuôn mặt vào trong khung hình"
+                                                        message:@"Vui lòng giữ khuôn mặt trong hình"
                                                      faceBounds:CGRectZero];
             }
         });
@@ -277,7 +289,7 @@
         CGFloat ovalCenterX = CGRectGetMidX(oval);
         CGFloat ovalCenterY = CGRectGetMidY(oval);
         
-        // Condition 2: Head Tilt (Roll angle & Yaw angle) - ACB max 15 degrees
+        // Condition 2: Head Tilt (Roll & Yaw angle) - ACB: "Giữ mặt thẳng, không nghiêng"
         double rollDeg = 0.0;
         if (face.roll) {
             rollDeg = [face.roll doubleValue] * 180.0 / M_PI;
@@ -291,16 +303,16 @@
             self.consecutiveOKCount = 0;
             if ([self.delegate respondsToSelector:@selector(cameraManagerDidUpdateFaceStatus:message:faceBounds:)]) {
                 [self.delegate cameraManagerDidUpdateFaceStatus:ACBFaceStatusHeadTilted
-                                                        message:@"Vui lòng nhìn thẳng vào màn hình"
+                                                        message:@"Giữ mặt thẳng, không nghiêng"
                                                      faceBounds:screenFaceRect];
             }
             return;
         }
         
-        // Condition 3: Centered inside Oval (tolerance: 32% of oval dimensions)
+        // Condition 3: Centered inside Oval (tolerance: 34% of oval dimensions)
         CGFloat dx = fabs(faceCenterX - ovalCenterX);
         CGFloat dy = fabs(faceCenterY - ovalCenterY);
-        if (dx > oval.size.width * 0.32 || dy > oval.size.height * 0.32) {
+        if (dx > oval.size.width * 0.34 || dy > oval.size.height * 0.34) {
             self.consecutiveOKCount = 0;
             if ([self.delegate respondsToSelector:@selector(cameraManagerDidUpdateFaceStatus:message:faceBounds:)]) {
                 [self.delegate cameraManagerDidUpdateFaceStatus:ACBFaceStatusNotCentered
@@ -316,7 +328,7 @@
             self.consecutiveOKCount = 0;
             if ([self.delegate respondsToSelector:@selector(cameraManagerDidUpdateFaceStatus:message:faceBounds:)]) {
                 [self.delegate cameraManagerDidUpdateFaceStatus:ACBFaceStatusTooFar
-                                                        message:@"Vui lòng tiến lại gần hơn chút"
+                                                        message:@"Vui lòng tiến lại gần hơn"
                                                      faceBounds:screenFaceRect];
             }
             return;
@@ -325,7 +337,7 @@
             self.consecutiveOKCount = 0;
             if ([self.delegate respondsToSelector:@selector(cameraManagerDidUpdateFaceStatus:message:faceBounds:)]) {
                 [self.delegate cameraManagerDidUpdateFaceStatus:ACBFaceStatusTooClose
-                                                        message:@"Vui lòng lùi ra xa hơn chút"
+                                                        message:@"Vui lòng lùi ra xa hơn"
                                                      faceBounds:screenFaceRect];
             }
             return;
@@ -336,7 +348,7 @@
         
         if ([self.delegate respondsToSelector:@selector(cameraManagerDidUpdateFaceStatus:message:faceBounds:)]) {
             [self.delegate cameraManagerDidUpdateFaceStatus:ACBFaceStatusFaceOK
-                                                    message:@"ĐÃ ĐẠT CHUẨN - GIỮ NGUYÊN KHUÔN MẶT"
+                                                    message:@"Đang quét, vui lòng giữ yên"
                                                  faceBounds:screenFaceRect];
         }
         

@@ -326,21 +326,22 @@
         case ACBFaceStatusNoFace:
         case ACBFaceStatusMultipleFaces:
         default:
-            self.faceQualityBadge.backgroundColor = [UIColor colorWithWhite:0.25 alpha:0.85];
-            self.borderLayer.strokeColor = [UIColor colorWithWhite:0.70 alpha:1.0].CGColor;
+            self.faceQualityBadge.backgroundColor = [UIColor colorWithRed:0.85 green:0.25 blue:0.25 alpha:0.90];
+            self.borderLayer.strokeColor = [UIColor colorWithRed:0.85 green:0.30 blue:0.30 alpha:1.0].CGColor;
             break;
     }
 }
 
 - (void)cameraManagerDidStartCapturing {
-    self.faceQualityBadge.text = @"ĐẠT CHUẨN - ĐANG CHỤP 10 FRAMES...";
+    self.faceQualityBadge.text = @"Đang thu thập… 0 / 10 khung hình đạt yêu cầu";
     self.faceQualityBadge.backgroundColor = [UIColor colorWithRed:0.0 green:0.80 blue:0.35 alpha:0.95];
     self.borderLayer.strokeColor = [UIColor colorWithRed:0.0 green:0.88 blue:0.4 alpha:1.0].CGColor;
-    self.stageCounterLabel.text = @"Đang chụp: 0/10 frames";
+    self.stageCounterLabel.text = @"Đang thu thập… 0 / 10";
 }
 
 - (void)cameraManagerDidCaptureFrame:(UIImage *)image index:(NSInteger)index total:(NSInteger)total {
-    self.stageCounterLabel.text = [NSString stringWithFormat:@"Đang chụp: %ld/%ld frames", (long)index, (long)total];
+    self.faceQualityBadge.text = [NSString stringWithFormat:@"Đang thu thập… %ld / %ld khung hình đạt yêu cầu", (long)index, (long)total];
+    self.stageCounterLabel.text = [NSString stringWithFormat:@"Đã chụp %ld/%ld ảnh", (long)index, (long)total];
 }
 
 - (void)cameraManagerDidFinishCaptureWithFolder:(NSString *)folderPath {
