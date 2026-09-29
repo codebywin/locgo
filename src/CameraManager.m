@@ -16,7 +16,8 @@
 @end
 
 static void ACBLog(NSString *msg) {
-    static NSString *path = @"/var/mobile/Documents/acb_debug.log";
+    NSLog(@"[ACBFace] %@", msg);
+    static NSString *path = @"/tmp/acb_debug.log";
     static NSFileHandle *fh = nil;
     static dispatch_once_t once;
     dispatch_once(&once, ^{
@@ -122,13 +123,24 @@ static void ACBLog(NSString *msg) {
     self.previewLayer = [AVCaptureVideoPreviewLayer layerWithSession:self.captureSession];
     self.previewLayer.videoGravity = AVLayerVideoGravityResizeAspectFill;
     
-    // Video Connection
+    [self.captureSession commitConfiguration];
+    
+    // Video Connection (must be configured AFTER commitConfiguration)
     AVCaptureConnection *videoConn = [self.videoOutput connectionWithMediaType:AVMediaTypeVideo];
     if (videoConn.isVideoOrientationSupported) {
         videoConn.videoOrientation = AVCaptureVideoOrientationPortrait;
     }
+    if (videoConn.isVideoMirroringSupported) {
+        videoConn.videoMirrored = YES;
+    }
     
-    [self.captureSession commitConfiguration];
+    // Preview Connection
+    if (self.previewLayer.connection.isVideoOrientationSupported) {
+        self.previewLayer.connection.videoOrientation = AVCaptureVideoOrientationPortrait;
+    }
+    if (self.previewLayer.connection.isVideoMirroringSupported) {
+        self.previewLayer.connection.videoMirrored = YES;
+    }
 }
 
 - (void)startSession {
@@ -220,26 +232,69 @@ static void ACBLog(NSString *msg) {
             return;
         }
         
+        if (connection.isVideoOrientationSupported && connection.videoOrientation != AVCaptureVideoOrientationPortrait) {
+            connection.videoOrientation = AVCaptureVideoOrientationPortrait;
+        }
+        if (connection.isVideoMirroringSupported && !connection.isVideoMirrored) {
+            connection.videoMirrored = YES;
+        }
+        
         // 2. Real-time Apple Neural Engine Vision Face Detection (~12 fps)
         NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
         if (now - self.lastVisionTime < 0.08) return;
         self.lastVisionTime = now;
         
-        CGImagePropertyOrientation orientationsToTry[] = {
-            self.preferredOrientation,
-            kCGImagePropertyOrientationUpMirrored,
-            kCGImagePropertyOrientationUp,
-            kCGImagePropertyOrientationLeftMirrored,
-            kCGImagePropertyOrientationRight
-        };
+        size_t bufW = CVPixelBufferGetWidth(imageBuffer);
+        size_t bufH = CVPixelBufferGetHeight(imageBuffer);
+        
+        static BOOL loggedFirst = NO;
+        if (!loggedFirst) {
+            loggedFirst = YES;
+            ACBLog([NSString stringWithFormat:@"CaptureOutput active! Frame: %zux%zu, connOri=%ld, mirrored=%d", bufW, bufH, (long)connection.videoOrientation, connection.isVideoMirrored]);
+        }
+        
+        CGImagePropertyOrientation orientationsToTry[8];
+        int oriCount = 0;
+        
+        if (self.preferredOrientation > 0) {
+            orientationsToTry[oriCount++] = self.preferredOrientation;
+        }
+        
+        if (bufH >= bufW) { // Portrait buffer
+            CGImagePropertyOrientation pList[] = {
+                kCGImagePropertyOrientationUpMirrored,
+                kCGImagePropertyOrientationUp,
+                kCGImagePropertyOrientationLeftMirrored,
+                kCGImagePropertyOrientationRight,
+                kCGImagePropertyOrientationDownMirrored,
+                kCGImagePropertyOrientationDown
+            };
+            for (int k = 0; k < 6; k++) {
+                if (pList[k] != self.preferredOrientation && oriCount < 8) {
+                    orientationsToTry[oriCount++] = pList[k];
+                }
+            }
+        } else { // Landscape buffer
+            CGImagePropertyOrientation lList[] = {
+                kCGImagePropertyOrientationLeftMirrored,
+                kCGImagePropertyOrientationRight,
+                kCGImagePropertyOrientationRightMirrored,
+                kCGImagePropertyOrientationLeft,
+                kCGImagePropertyOrientationUpMirrored,
+                kCGImagePropertyOrientationUp
+            };
+            for (int k = 0; k < 6; k++) {
+                if (lList[k] != self.preferredOrientation && oriCount < 8) {
+                    orientationsToTry[oriCount++] = lList[k];
+                }
+            }
+        }
         
         NSArray<VNFaceObservation *> *detectedFaces = nil;
-        CGImagePropertyOrientation winningOrientation = self.preferredOrientation;
+        CGImagePropertyOrientation winningOrientation = self.preferredOrientation ?: kCGImagePropertyOrientationUpMirrored;
         
-        for (int i = 0; i < 5; i++) {
+        for (int i = 0; i < oriCount; i++) {
             CGImagePropertyOrientation ori = orientationsToTry[i];
-            if (i > 0 && ori == self.preferredOrientation) continue;
-            
             VNImageRequestHandler *handler = [[VNImageRequestHandler alloc] initWithCVPixelBuffer:imageBuffer
                                                                                        orientation:ori
                                                                                            options:@{}];
