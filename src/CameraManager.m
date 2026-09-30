@@ -226,6 +226,9 @@ static UIImage * _Nullable ImageFromPixelBuffer(CVPixelBufferRef pixelBuffer) {
 
         // Set video delegate AFTER commitConfiguration
         if (self.videoOutput) {
+            SEL sel = @selector(captureOutput:didOutputSampleBuffer:fromConnection:);
+            BOOL canRespond = [self respondsToSelector:sel];
+            ACBLog([NSString stringWithFormat:@"CameraManager respondsToSelector(didOutputSampleBuffer)=%d", canRespond]);
             [self.videoOutput setSampleBufferDelegate:self queue:self.videoQueue];
             ACBLog(@"videoOutput delegate set after commit");
         }
@@ -339,6 +342,7 @@ static UIImage * _Nullable ImageFromPixelBuffer(CVPixelBufferRef pixelBuffer) {
 - (void)captureOutput:(AVCaptureOutput *)output 
 didOutputSampleBuffer:(CMSampleBufferRef)sampleBuffer fromConnection:(AVCaptureConnection *)connection {
     @autoreleasepool {
+        if (output != self.videoOutput) return; // Only handle video output
         CVImageBufferRef imageBuffer = CMSampleBufferGetImageBuffer(sampleBuffer);
         if (!imageBuffer) return;
         
@@ -357,6 +361,15 @@ didOutputSampleBuffer:(CMSampleBufferRef)sampleBuffer fromConnection:(AVCaptureC
             ACBLog([NSString stringWithFormat:@"Video buffer cached: #%ld (%zux%zu, format='%.4s')", 
                     (long)self.sampleBufferCounter, w, h, (const char*)&pixelFormat]);
         }
+    }
+}
+
+- (void)captureOutput:(AVCaptureOutput *)output didDropSampleBuffer:(CMSampleBufferRef)sampleBuffer fromConnection:(AVCaptureConnection *)connection {
+    // Optional: log drops
+    static NSInteger dropCount = 0;
+    dropCount++;
+    if (dropCount <= 5 || dropCount % 60 == 0) {
+        ACBLog([NSString stringWithFormat:@"didDropSampleBuffer #%ld", (long)dropCount]);
     }
 }
 
