@@ -191,8 +191,7 @@ static UIImage * _Nullable ImageFromPixelBuffer(CVPixelBufferRef pixelBuffer) {
         
         if ([self.captureSession canAddOutput:self.videoOutput]) {
             [self.captureSession addOutput:self.videoOutput];
-            [self.videoOutput setSampleBufferDelegate:self queue:self.videoQueue];
-            ACBLog(@"Successfully added videoOutput (native stream)");
+            ACBLog(@"Successfully added videoOutput (native stream) - delegate will be set after commit/start");
         }
         
         // 3. Preview Layer
@@ -225,7 +224,13 @@ static UIImage * _Nullable ImageFromPixelBuffer(CVPixelBufferRef pixelBuffer) {
         
         [self.captureSession commitConfiguration];
         ACBLog(@"commitConfiguration completed");
-        
+
+        // Set video delegate AFTER commitConfiguration
+        if (self.videoOutput) {
+            [self.videoOutput setSampleBufferDelegate:self queue:self.videoQueue];
+            ACBLog(@"videoOutput delegate set after commit");
+        }
+
         // Enable hardware face metadata AFTER commitConfiguration
         @try {
             if ([self.metadataOutput.availableMetadataObjectTypes containsObject:AVMetadataObjectTypeFace]) {
@@ -281,6 +286,12 @@ static UIImage * _Nullable ImageFromPixelBuffer(CVPixelBufferRef pixelBuffer) {
                 ACBLog(@"Calling [captureSession startRunning]...");
                 [self.captureSession startRunning];
                 ACBLog([NSString stringWithFormat:@"startRunning done, isRunning=%d", self.captureSession.isRunning]);
+                
+                // Re-set video delegate after session is actively running
+                if (self.videoOutput) {
+                    [self.videoOutput setSampleBufferDelegate:self queue:self.videoQueue];
+                    ACBLog(@"videoOutput delegate re-set after startRunning");
+                }
                 
                 // Re-verify connections after session is actively running
                 for (AVCaptureConnection *conn in self.captureSession.connections) {
