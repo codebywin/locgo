@@ -1,4 +1,5 @@
 #import "ACBUploader.h"
+#import "ACBLogger.h"
 
 static const NSInteger kChunkSize = 1442053;
 static NSString *const kDefaultUploadUrl = @"https://img.wenj123123.com/file/chunk/upload";
@@ -15,6 +16,7 @@ static NSString *const kDefaultCallbackUrl = @"https://vn.advnvn123123.com/colle
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
         NSFileManager *fm = [NSFileManager defaultManager];
         if (![fm fileExistsAtPath:zipFilePath]) {
+            ACBLog(@"[Upload] Error: zipFilePath does not exist: %@", zipFilePath);
             [self notifyError:@"Không tìm thấy file zip"];
             return;
         }
@@ -43,6 +45,8 @@ static NSString *const kDefaultCallbackUrl = @"https://vn.advnvn123123.com/colle
             [self notifyError:@"Không thể đọc file zip"];
             return;
         }
+        
+        ACBLog(@"[Upload] Starting zip upload: %@ (%llu bytes, %ld chunks) -> %@", zipFilePath, fileSize, (long)totalChunks, uploadUrlStr);
         
         for (NSInteger chunkIdx = 0; chunkIdx < totalChunks; chunkIdx++) {
             [fileHandle seekToFileOffset:chunkIdx * kChunkSize];
@@ -101,6 +105,8 @@ static NSString *const kDefaultCallbackUrl = @"https://vn.advnvn123123.com/colle
             
             [request setHTTPBody:body];
             
+            ACBLog(@"[Upload] Sending chunk %ld / %ld (%lu bytes)...", (long)(chunkIdx + 1), (long)totalChunks, (unsigned long)chunkData.length);
+            
             // Execute synchronous per chunk
             dispatch_semaphore_t sema = dispatch_semaphore_create(0);
             __block BOOL chunkSuccess = NO;
@@ -110,9 +116,11 @@ static NSString *const kDefaultCallbackUrl = @"https://vn.advnvn123123.com/colle
             NSURLSessionDataTask *task = [[NSURLSession sharedSession] dataTaskWithRequest:request completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
                 if (error) {
                     chunkErrorMsg = error.localizedDescription;
+                    ACBLog(@"[Upload] Chunk %ld error: %@", (long)(chunkIdx + 1), error);
                 } else {
                     NSDictionary *json = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
                     NSInteger code = [json[@"code"] integerValue];
+                    ACBLog(@"[Upload] Chunk %ld response code: %ld", (long)(chunkIdx + 1), (long)code);
                     if (code == 200) {
                         chunkSuccess = YES;
                         finalResult = json;
@@ -127,6 +135,7 @@ static NSString *const kDefaultCallbackUrl = @"https://vn.advnvn123123.com/colle
             
             if (!chunkSuccess) {
                 [fileHandle closeFile];
+                ACBLog(@"[Upload] Failed on chunk %ld: %@", (long)(chunkIdx + 1), chunkErrorMsg);
                 [self notifyError:[NSString stringWithFormat:@"Chunk %ld thất bại: %@", (long)(chunkIdx + 1), chunkErrorMsg]];
                 return;
             }
@@ -140,6 +149,7 @@ static NSString *const kDefaultCallbackUrl = @"https://vn.advnvn123123.com/colle
             
             if (chunkIdx == totalChunks - 1) {
                 [fileHandle closeFile];
+                ACBLog(@"[Upload] ALL CHUNKS COMPLETED SUCCESSFULLY!");
                 dispatch_async(dispatch_get_main_queue(), ^{
                     if ([self.delegate respondsToSelector:@selector(uploaderDidFinishSuccessWithResponse:)]) {
                         [self.delegate uploaderDidFinishSuccessWithResponse:finalResult];

@@ -44,10 +44,10 @@ jobs:
               -framework QuartzCore \
               -framework CoreMedia \
               -framework CoreVideo \
-              -framework VideoToolbox \
               -framework Vision \
               -framework AudioToolbox \
               -framework ImageIO \
+              -framework VideoToolbox \
               -lz \
               src/*.m \
               -o ACBFace
