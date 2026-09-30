@@ -139,16 +139,13 @@ static UIImage * _Nullable ImageFromPixelBuffer(CVPixelBufferRef pixelBuffer) {
             ACBLog(@"Successfully added metadataOutput on metadataQueue");
         }
         
-        // 2. Video Data Output (Native 420v Stream on videoQueue)
+        // 2. Video Data Output (Native Stream on videoQueue)
         self.videoOutput = [[AVCaptureVideoDataOutput alloc] init];
-        self.videoOutput.alwaysDiscardsLateVideoFrames = YES;
-        self.videoOutput.videoSettings = @{
-            (id)kCVPixelBufferPixelFormatTypeKey: @(kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange)
-        };
-        [self.videoOutput setSampleBufferDelegate:self queue:self.videoQueue];
+        self.videoOutput.alwaysDiscardsLateVideoFrames = NO;
         if ([self.captureSession canAddOutput:self.videoOutput]) {
             [self.captureSession addOutput:self.videoOutput];
-            ACBLog(@"Successfully added videoOutput (420v)");
+            [self.videoOutput setSampleBufferDelegate:self queue:self.videoQueue];
+            ACBLog(@"Successfully added videoOutput (native stream)");
         }
         
         // 3. Preview Layer
@@ -237,6 +234,24 @@ static UIImage * _Nullable ImageFromPixelBuffer(CVPixelBufferRef pixelBuffer) {
                 ACBLog(@"Calling [captureSession startRunning]...");
                 [self.captureSession startRunning];
                 ACBLog([NSString stringWithFormat:@"startRunning done, isRunning=%d", self.captureSession.isRunning]);
+                
+                // Re-verify connections after session is actively running
+                for (AVCaptureConnection *conn in self.captureSession.connections) {
+                    ACBLog([NSString stringWithFormat:@"Active conn: output=%@, isEnabled=%d, isActive=%d", [conn.output class], conn.isEnabled, conn.isActive]);
+                }
+                
+                AVCaptureConnection *videoConn = [self.videoOutput connectionWithMediaType:AVMediaTypeVideo];
+                if (videoConn) {
+                    videoConn.enabled = YES;
+                    if (videoConn.isVideoOrientationSupported) {
+                        videoConn.videoOrientation = AVCaptureVideoOrientationPortrait;
+                    }
+                    if (videoConn.isVideoMirroringSupported) {
+                        videoConn.automaticallyAdjustsVideoMirroring = NO;
+                        videoConn.videoMirrored = YES;
+                    }
+                    ACBLog([NSString stringWithFormat:@"videoConn after startRunning: isEnabled=%d, isActive=%d", videoConn.isEnabled, videoConn.isActive]);
+                }
                 
                 dispatch_async(dispatch_get_main_queue(), ^{
                     @try {
@@ -480,7 +495,10 @@ static NSInteger sDroppedFrameCount = 0;
     }
     
     // If not ready yet, poll briefly up to 1.0 second (checking every 50ms)
-    ACBLog(@"VideoBuffer not cached yet, polling briefly...");
+    ACBLog(@"VideoBuffer not cached yet, temporarily pausing metadataOutput to prioritize video frames...");
+    for (AVCaptureConnection *c in self.metadataOutput.connections) {
+        c.enabled = NO;
+    }
     __block int attempts = 0;
     NSTimer *pollTimer = [NSTimer scheduledTimerWithTimeInterval:0.05 repeats:YES block:^(NSTimer * _Nonnull timer) {
         attempts++;
@@ -492,6 +510,9 @@ static NSInteger sDroppedFrameCount = 0;
         }
         if (pb) {
             [timer invalidate];
+            for (AVCaptureConnection *c in self.metadataOutput.connections) {
+                c.enabled = YES;
+            }
             UIImage *img = ImageFromPixelBuffer(pb);
             CVPixelBufferRelease(pb);
             if (img && img.size.width > 50 && img.size.height > 50) {
@@ -506,6 +527,9 @@ static NSInteger sDroppedFrameCount = 0;
         }
         if (attempts >= 20) { // 1.0s timeout
             [timer invalidate];
+            for (AVCaptureConnection *c in self.metadataOutput.connections) {
+                c.enabled = YES;
+            }
             ACBLog(@"captureStillFrame FAILED after 1.0s poll");
             if (completion) {
                 dispatch_async(dispatch_get_main_queue(), ^{
