@@ -425,16 +425,6 @@ static void ACBLog(NSString *format, ...) {
     // Immediate UI feedback
     self.guideLabel.text = @"Đang chụp ảnh...";
     
-    // Instant shutter sound & flash animation
-    AudioServicesPlaySystemSound(1108); // Shutter sound
-    [UIView animateWithDuration:0.08 animations:^{
-        self.flashView.alpha = 0.85;
-    } completion:^(BOOL finished) {
-        [UIView animateWithDuration:0.12 animations:^{
-            self.flashView.alpha = 0.0;
-        }];
-    }];
-    
     NSInteger capturedIndex = self.currentRound;
     ACBLog([NSString stringWithFormat:@"captureCurrentRound started for round %ld / %ld", (long)capturedIndex, (long)self.totalRounds]);
     
@@ -447,6 +437,16 @@ static void ACBLog(NSString *format, ...) {
             });
             return;
         }
+        
+        // Instant shutter sound & flash feedback upon successful capture
+        AudioServicesPlaySystemSound(1108);
+        [UIView animateWithDuration:0.08 animations:^{
+            self.flashView.alpha = 0.85;
+        } completion:^(BOOL finished) {
+            [UIView animateWithDuration:0.12 animations:^{
+                self.flashView.alpha = 0.0;
+            }];
+        }];
         
         // Save frame as "{index}.jpg" in session directory (matching ACB NEW: 1.jpg ... 10.jpg)
         NSString *filePath = [self.sessionDirectory stringByAppendingPathComponent:[NSString stringWithFormat:@"%ld.jpg", (long)capturedIndex]];

@@ -1,7 +1,7 @@
 #import "CameraManager.h"
 #import <CoreMedia/CoreMedia.h>
 #import <CoreVideo/CoreVideo.h>
-#import <VideoToolbox/VideoToolbox.h>
+#import <ImageIO/ImageIO.h>
 
 static void ACBLog(NSString *format, ...) {
     va_list args;
@@ -34,56 +34,18 @@ static void ACBLog(NSString *format, ...) {
     }
 }
 
-static UIImage * _Nullable ImageFromPixelBuffer(CVPixelBufferRef pixelBuffer) {
-    if (!pixelBuffer) return nil;
-    
-    // Path 1: VideoToolbox hardware-accelerated conversion (Fastest, ~1ms)
-    CGImageRef vtCg = NULL;
-    OSStatus status = VTCreateCGImageFromCVPixelBuffer(pixelBuffer, NULL, &vtCg);
-    if (status == noErr && vtCg) {
-        UIImage *img = [UIImage imageWithCGImage:vtCg scale:1.0 orientation:UIImageOrientationUp];
-        CGImageRelease(vtCg);
-        return img;
-    }
-    
-    // Path 2: Direct CoreGraphics bitmap context from locked pixel buffer
-    CVPixelBufferLockBaseAddress(pixelBuffer, kCVPixelBufferLock_ReadOnly);
-    void *base = CVPixelBufferGetBaseAddress(pixelBuffer);
-    size_t w = CVPixelBufferGetWidth(pixelBuffer);
-    size_t h = CVPixelBufferGetHeight(pixelBuffer);
-    size_t bpr = CVPixelBufferGetBytesPerRow(pixelBuffer);
-    
-    CGColorSpaceRef cs = CGColorSpaceCreateDeviceRGB();
-    CGContextRef ctx = CGBitmapContextCreate(base, w, h, 8, bpr, cs,
-                                            kCGBitmapByteOrder32Little | kCGImageAlphaPremultipliedFirst);
-    CGImageRef cg = CGBitmapContextCreateImage(ctx);
-    CGContextRelease(ctx);
-    CGColorSpaceRelease(cs);
-    CVPixelBufferUnlockBaseAddress(pixelBuffer, kCVPixelBufferLock_ReadOnly);
-    
-    if (cg) {
-        UIImage *img = [UIImage imageWithCGImage:cg scale:1.0 orientation:UIImageOrientationUp];
-        CGImageRelease(cg);
-        return img;
-    }
-    
-    return nil;
-}
-
-@interface CameraManager () {
-    CVPixelBufferRef _latestPixelBuffer;
-}
+@interface CameraManager ()
 
 @property (nonatomic, strong) AVCaptureSession *captureSession;
 @property (nonatomic, strong) AVCaptureDevice *frontCamera;
 @property (nonatomic, strong) AVCaptureDeviceInput *videoInput;
 @property (nonatomic, strong) AVCaptureMetadataOutput *metadataOutput;
-@property (nonatomic, strong) AVCaptureVideoDataOutput *videoOutput;
+@property (nonatomic, strong) AVCapturePhotoOutput *photoOutput;
 @property (nonatomic, strong) AVCaptureVideoPreviewLayer *previewLayer;
-@property (nonatomic, strong) dispatch_queue_t videoQueue;
+@property (nonatomic, copy, nullable) void(^photoCaptureCompletion)(UIImage * _Nullable image);
 
 @property (nonatomic, assign) NSInteger frameCounter;
-@property (nonatomic, assign) NSInteger sampleBufferCounter;
+@property (nonatomic, assign) BOOL isCapturePending;
 
 @end
 
@@ -94,8 +56,7 @@ static UIImage * _Nullable ImageFromPixelBuffer(CVPixelBufferRef pixelBuffer) {
     if (self) {
         ACBLog(@"CameraManager init started");
         _frameCounter = 0;
-        _sampleBufferCounter = 0;
-        _videoQueue = dispatch_queue_create("com.acbface.videoQueue", DISPATCH_QUEUE_SERIAL);
+        _isCapturePending = NO;
         [self setupSession];
     }
     return self;
@@ -103,12 +64,6 @@ static UIImage * _Nullable ImageFromPixelBuffer(CVPixelBufferRef pixelBuffer) {
 
 - (void)dealloc {
     [self stopSession];
-    @synchronized (self) {
-        if (_latestPixelBuffer) {
-            CVPixelBufferRelease(_latestPixelBuffer);
-            _latestPixelBuffer = NULL;
-        }
-    }
 }
 
 - (void)setupSession {
@@ -117,9 +72,9 @@ static UIImage * _Nullable ImageFromPixelBuffer(CVPixelBufferRef pixelBuffer) {
         self.captureSession = [[AVCaptureSession alloc] init];
         [self.captureSession beginConfiguration];
         
-        if ([self.captureSession canSetSessionPreset:AVCaptureSessionPreset1280x720]) {
-            self.captureSession.sessionPreset = AVCaptureSessionPreset1280x720;
-            ACBLog(@"Session preset configured to AVCaptureSessionPreset1280x720");
+        if ([self.captureSession canSetSessionPreset:AVCaptureSessionPresetPhoto]) {
+            self.captureSession.sessionPreset = AVCaptureSessionPresetPhoto;
+            ACBLog(@"Session preset configured to AVCaptureSessionPresetPhoto");
         } else if ([self.captureSession canSetSessionPreset:AVCaptureSessionPresetHigh]) {
             self.captureSession.sessionPreset = AVCaptureSessionPresetHigh;
             ACBLog(@"Session preset configured to AVCaptureSessionPresetHigh");
@@ -156,18 +111,13 @@ static UIImage * _Nullable ImageFromPixelBuffer(CVPixelBufferRef pixelBuffer) {
             ACBLog(@"Failed to add metadataOutput");
         }
         
-        // 2. Video Data Output (Direct Uncompressed BGRA Frame Buffer Delivery)
-        self.videoOutput = [[AVCaptureVideoDataOutput alloc] init];
-        self.videoOutput.alwaysDiscardsLateVideoFrames = YES;
-        self.videoOutput.videoSettings = @{
-            (id)kCVPixelBufferPixelFormatTypeKey: @(kCVPixelFormatType_32BGRA)
-        };
-        [self.videoOutput setSampleBufferDelegate:self queue:self.videoQueue];
-        if ([self.captureSession canAddOutput:self.videoOutput]) {
-            [self.captureSession addOutput:self.videoOutput];
-            ACBLog(@"Successfully added videoOutput (32BGRA)");
+        // 2. Photo Output (Official Apple Still Image Capture API)
+        self.photoOutput = [[AVCapturePhotoOutput alloc] init];
+        if ([self.captureSession canAddOutput:self.photoOutput]) {
+            [self.captureSession addOutput:self.photoOutput];
+            ACBLog(@"Successfully added photoOutput");
         } else {
-            ACBLog(@"Failed to add videoOutput");
+            ACBLog(@"Failed to add photoOutput");
         }
         
         // 3. Preview Layer
@@ -187,21 +137,21 @@ static UIImage * _Nullable ImageFromPixelBuffer(CVPixelBufferRef pixelBuffer) {
             ACBLog(@"Warning setting metadataObjectTypes: %@", ex);
         }
         
-        // Configure video connection AFTER commitConfiguration
+        // Configure photo connection AFTER commitConfiguration
         @try {
-            AVCaptureConnection *videoConn = [self.videoOutput connectionWithMediaType:AVMediaTypeVideo];
-            if (videoConn) {
-                if (videoConn.isVideoOrientationSupported) {
-                    videoConn.videoOrientation = AVCaptureVideoOrientationPortrait;
+            AVCaptureConnection *photoConn = [self.photoOutput connectionWithMediaType:AVMediaTypeVideo];
+            if (photoConn) {
+                if (photoConn.isVideoOrientationSupported) {
+                    photoConn.videoOrientation = AVCaptureVideoOrientationPortrait;
                 }
-                if (videoConn.isVideoMirroringSupported) {
-                    videoConn.automaticallyAdjustsVideoMirroring = NO;
-                    videoConn.videoMirrored = YES;
+                if (photoConn.isVideoMirroringSupported) {
+                    photoConn.automaticallyAdjustsVideoMirroring = NO;
+                    photoConn.videoMirrored = YES;
                 }
-                ACBLog([NSString stringWithFormat:@"videoConn: active=%d, enabled=%d", videoConn.isActive, videoConn.isEnabled]);
+                ACBLog([NSString stringWithFormat:@"photoConn: active=%d, enabled=%d", photoConn.isActive, photoConn.isEnabled]);
             }
         } @catch (NSException *ex) {
-            ACBLog(@"Warning configuring videoConn: %@", ex);
+            ACBLog(@"Warning configuring photoConn: %@", ex);
         }
         
         // Configure previewLayer connection
@@ -218,6 +168,8 @@ static UIImage * _Nullable ImageFromPixelBuffer(CVPixelBufferRef pixelBuffer) {
         } @catch (NSException *ex) {
             ACBLog(@"Warning configuring previewLayer connection: %@", ex);
         }
+        
+        ACBLog([NSString stringWithFormat:@"photoOutput availablePhotoCodecTypes: %@", self.photoOutput.availablePhotoCodecTypes]);
     } @catch (NSException *e) {
         ACBLog(@"CRASH in setupSession: %@, reason: %@", e.name, e.reason);
     }
@@ -289,30 +241,7 @@ static UIImage * _Nullable ImageFromPixelBuffer(CVPixelBufferRef pixelBuffer) {
     }
 }
 
-#pragma mark - AVCaptureVideoDataOutputSampleBufferDelegate (Frame Caching)
-
-- (void)captureOutput:(AVCaptureOutput *)output didOutputSampleBuffer:(CMSampleBufferRef)sampleBuffer fromConnection:(AVCaptureConnection *)connection {
-    @autoreleasepool {
-        CVImageBufferRef imageBuffer = CMSampleBufferGetImageBuffer(sampleBuffer);
-        if (!imageBuffer) return;
-        
-        @synchronized (self) {
-            if (_latestPixelBuffer) {
-                CVPixelBufferRelease(_latestPixelBuffer);
-            }
-            _latestPixelBuffer = CVPixelBufferRetain(imageBuffer);
-        }
-        
-        self.sampleBufferCounter++;
-        if (self.sampleBufferCounter % 90 == 1) {
-            size_t w = CVPixelBufferGetWidth(imageBuffer);
-            size_t h = CVPixelBufferGetHeight(imageBuffer);
-            ACBLog([NSString stringWithFormat:@"Video frame arriving: #%ld (%zux%zu)", (long)self.sampleBufferCounter, w, h]);
-        }
-    }
-}
-
-#pragma mark - AVCaptureMetadataOutputObjectsDelegate (Face Detection)
+#pragma mark - AVCaptureMetadataOutputObjectsDelegate (Primary Hardware ISP Face Detection)
 
 - (void)captureOutput:(AVCaptureOutput *)output didOutputMetadataObjects:(NSArray<__kindof AVMetadataObject *> *)metadataObjects fromConnection:(AVCaptureConnection *)connection {
     self.frameCounter++;
@@ -470,42 +399,129 @@ static UIImage * _Nullable ImageFromPixelBuffer(CVPixelBufferRef pixelBuffer) {
     });
 }
 
+#pragma mark - AVCapturePhotoCaptureDelegate (Dual iOS 10 & iOS 11 Support)
+
+- (void)captureOutput:(AVCapturePhotoOutput *)output willBeginCaptureForResolvedSettings:(AVCaptureResolvedPhotoSettings *)resolvedSettings {
+    ACBLog(@"photoOutput: willBeginCaptureForResolvedSettings");
+}
+
+- (void)captureOutput:(AVCapturePhotoOutput *)output willCapturePhotoForResolvedSettings:(AVCaptureResolvedPhotoSettings *)resolvedSettings {
+    ACBLog(@"photoOutput: willCapturePhotoForResolvedSettings");
+}
+
+- (void)captureOutput:(AVCapturePhotoOutput *)output didCapturePhotoForResolvedSettings:(AVCaptureResolvedPhotoSettings *)resolvedSettings {
+    ACBLog(@"photoOutput: didCapturePhotoForResolvedSettings");
+}
+
+// Method 1: Modern iOS 11+ AVCapturePhoto delivery
+- (void)captureOutput:(AVCapturePhotoOutput *)output didFinishProcessingPhoto:(AVCapturePhoto *)photo error:(nullable NSError *)error {
+    ACBLog([NSString stringWithFormat:@"photoOutput: didFinishProcessingPhoto (photo=%@, error=%@)", photo, error]);
+    
+    void (^comp)(UIImage *) = self.photoCaptureCompletion;
+    self.photoCaptureCompletion = nil;
+    self.isCapturePending = NO;
+    
+    if (error || !photo) {
+        ACBLog([NSString stringWithFormat:@"photoOutput didFinishProcessingPhoto error: %@", error]);
+        if (comp) comp(nil);
+        return;
+    }
+    
+    NSData *data = [photo fileDataRepresentation];
+    if (data && data.length > 0) {
+        UIImage *img = [UIImage imageWithData:data];
+        ACBLog([NSString stringWithFormat:@"photoOutput SUCCESS (AVCapturePhoto): %lu bytes, image: %.0fx%.0f", (unsigned long)data.length, img.size.width, img.size.height]);
+        if (comp) comp(img);
+    } else {
+        ACBLog(@"photoOutput: fileDataRepresentation returned nil");
+        if (comp) comp(nil);
+    }
+}
+
+// Method 2: Legacy iOS 10/11 SampleBuffer delivery
+- (void)captureOutput:(AVCapturePhotoOutput *)output didFinishProcessingPhotoSampleBuffer:(nullable CMSampleBufferRef)photoSampleBuffer previewPhotoSampleBuffer:(nullable CMSampleBufferRef)previewPhotoSampleBuffer resolvedSettings:(AVCaptureResolvedPhotoSettings *)resolvedSettings bracketSettings:(nullable AVCaptureBracketedStillImageSettings *)bracketSettings error:(nullable NSError *)error {
+    ACBLog([NSString stringWithFormat:@"photoOutput: didFinishProcessingPhotoSampleBuffer (buf=%p, error=%@)", photoSampleBuffer, error]);
+    
+    void (^comp)(UIImage *) = self.photoCaptureCompletion;
+    self.photoCaptureCompletion = nil;
+    self.isCapturePending = NO;
+    
+    if (error || !photoSampleBuffer) {
+        ACBLog([NSString stringWithFormat:@"photoOutput didFinishProcessingPhotoSampleBuffer error: %@", error]);
+        if (comp) comp(nil);
+        return;
+    }
+    
+    NSData *jpegData = [AVCapturePhotoOutput JPEGPhotoDataRepresentationForJPEGSampleBuffer:photoSampleBuffer previewPhotoSampleBuffer:previewPhotoSampleBuffer];
+    if (jpegData && jpegData.length > 0) {
+        UIImage *img = [UIImage imageWithData:jpegData];
+        ACBLog([NSString stringWithFormat:@"photoOutput SUCCESS (SampleBuffer): %lu bytes, image: %.0fx%.0f", (unsigned long)jpegData.length, img.size.width, img.size.height]);
+        if (comp) comp(img);
+    } else {
+        ACBLog(@"photoOutput: JPEGPhotoDataRepresentation returned nil");
+        if (comp) comp(nil);
+    }
+}
+
+- (void)captureOutput:(AVCapturePhotoOutput *)output didFinishCaptureForResolvedSettings:(AVCaptureResolvedPhotoSettings *)resolvedSettings error:(nullable NSError *)error {
+    ACBLog([NSString stringWithFormat:@"photoOutput: didFinishCaptureForResolvedSettings (error=%@)", error]);
+    if (error && self.photoCaptureCompletion) {
+        void (^comp)(UIImage *) = self.photoCaptureCompletion;
+        self.photoCaptureCompletion = nil;
+        self.isCapturePending = NO;
+        if (comp) comp(nil);
+    }
+}
+
 #pragma mark - Capture Frame for Round
 
 - (void)captureStillFrameWithCompletion:(void(^)(UIImage * _Nullable image))completion {
     ACBLog(@"captureStillFrameWithCompletion requested");
     
-    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_HIGH, 0), ^{
-        CVPixelBufferRef buffer = NULL;
-        for (int i = 0; i < 25; i++) {
-            @synchronized (self) {
-                if (self->_latestPixelBuffer) {
-                    buffer = CVPixelBufferRetain(self->_latestPixelBuffer);
-                    break;
-                }
-            }
-            [NSThread sleepForTimeInterval:0.02];
+    if (!self.photoOutput || !self.captureSession.isRunning) {
+        ACBLog(@"photoOutput not ready or session not running");
+        if (completion) completion(nil);
+        return;
+    }
+    
+    self.isCapturePending = YES;
+    
+    __block BOOL finished = NO;
+    void (^safeCompletion)(UIImage * _Nullable) = ^(UIImage * _Nullable img) {
+        @synchronized (self) {
+            if (finished) return;
+            finished = YES;
         }
+        self.photoCaptureCompletion = nil;
+        self.isCapturePending = NO;
         
-        UIImage *finalImage = nil;
-        if (buffer) {
-            finalImage = ImageFromPixelBuffer(buffer);
-            CVPixelBufferRelease(buffer);
-        }
-        
-        if (finalImage) {
-            ACBLog([NSString stringWithFormat:@"captureStillFrame SUCCESS from video buffer: %.0fx%.0f", finalImage.size.width, finalImage.size.height]);
+        if (completion) {
             dispatch_async(dispatch_get_main_queue(), ^{
-                if (completion) completion(finalImage);
+                completion(img);
             });
-            return;
         }
-        
-        ACBLog(@"captureStillFrame FAILED: no video buffer available");
-        dispatch_async(dispatch_get_main_queue(), ^{
-            if (completion) completion(nil);
-        });
+    };
+    
+    self.photoCaptureCompletion = safeCompletion;
+    
+    // Safety watchdog: 5.0 seconds
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(5.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        @synchronized (self) {
+            if (finished) return;
+        }
+        ACBLog(@"TIMEOUT (5.0s): photoOutput delegate did not respond in 5.0s");
+        safeCompletion(nil);
     });
+    
+    @try {
+        // Native default photo settings (100% hardware supported, JPEG default)
+        AVCapturePhotoSettings *settings = [AVCapturePhotoSettings photoSettings];
+        [self.photoOutput capturePhotoWithSettings:settings delegate:self];
+        ACBLog(@"Dispatched capturePhotoWithSettings (photoSettings default)");
+    } @catch (NSException *ex) {
+        ACBLog(@"capturePhotoWithSettings exception: %@", ex);
+        safeCompletion(nil);
+    }
 }
 
 @end
