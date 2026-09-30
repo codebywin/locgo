@@ -2,7 +2,6 @@
 #import <CoreVideo/CoreVideo.h>
 #import <CoreMedia/CoreMedia.h>
 #import <CoreImage/CoreImage.h>
-#import <VideoToolbox/VideoToolbox.h>
 
 static void ACBLog(NSString *format, ...) {
     va_list args;
@@ -539,31 +538,23 @@ static void ACBLog(NSString *format, ...) {
             return;
         }
         
-        CGImageRef cgImage = NULL;
-        OSStatus vtErr = VTCreateCGImageFromCVPixelBuffer(pixelBuffer, NULL, &cgImage);
-        
-        if (vtErr != noErr || !cgImage) {
-            ACBLog([NSString stringWithFormat:@"VTCreateCGImage failed (%d), trying CGBitmapContext...", (int)vtErr]);
-            CVPixelBufferLockBaseAddress(pixelBuffer, kCVPixelBufferLock_ReadOnly);
-            void *baseAddress = CVPixelBufferGetBaseAddress(pixelBuffer);
-            size_t width = CVPixelBufferGetWidth(pixelBuffer);
-            size_t height = CVPixelBufferGetHeight(pixelBuffer);
-            size_t bytesPerRow = CVPixelBufferGetBytesPerRow(pixelBuffer);
-            CGColorSpaceRef colorSpace = CGColorSpaceCreateDeviceRGB();
-            CGContextRef ctx = CGBitmapContextCreate(baseAddress,
-                                                     width,
-                                                     height,
-                                                     8,
-                                                     bytesPerRow,
-                                                     colorSpace,
-                                                     kCGBitmapByteOrder32Little | kCGImageAlphaPremultipliedFirst);
-            if (ctx) {
-                cgImage = CGBitmapContextCreateImage(ctx);
-                CGContextRelease(ctx);
-            }
-            CGColorSpaceRelease(colorSpace);
-            CVPixelBufferUnlockBaseAddress(pixelBuffer, kCVPixelBufferLock_ReadOnly);
-        }
+        CVPixelBufferLockBaseAddress(pixelBuffer, kCVPixelBufferLock_ReadOnly);
+        void *baseAddress = CVPixelBufferGetBaseAddress(pixelBuffer);
+        size_t width = CVPixelBufferGetWidth(pixelBuffer);
+        size_t height = CVPixelBufferGetHeight(pixelBuffer);
+        size_t bytesPerRow = CVPixelBufferGetBytesPerRow(pixelBuffer);
+        CGColorSpaceRef colorSpace = CGColorSpaceCreateDeviceRGB();
+        CGContextRef ctx = CGBitmapContextCreate(baseAddress,
+                                                 width,
+                                                 height,
+                                                 8,
+                                                 bytesPerRow,
+                                                 colorSpace,
+                                                 kCGBitmapByteOrder32Little | kCGImageAlphaPremultipliedFirst);
+        CGImageRef cgImage = ctx ? CGBitmapContextCreateImage(ctx) : NULL;
+        if (ctx) CGContextRelease(ctx);
+        CGColorSpaceRelease(colorSpace);
+        CVPixelBufferUnlockBaseAddress(pixelBuffer, kCVPixelBufferLock_ReadOnly);
         
         CVPixelBufferRelease(pixelBuffer);
         
