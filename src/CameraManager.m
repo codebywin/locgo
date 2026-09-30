@@ -1,7 +1,7 @@
 #import "CameraManager.h"
 #import <CoreMedia/CoreMedia.h>
 #import <CoreVideo/CoreVideo.h>
-#import <CoreGraphics/CoreGraphics.h>
+#import <VideoToolbox/VideoToolbox.h>
 
 static void ACBLog(NSString *format, ...) {
     va_list args;
@@ -34,18 +34,56 @@ static void ACBLog(NSString *format, ...) {
     }
 }
 
-@interface CameraManager ()
+static UIImage * _Nullable ImageFromPixelBuffer(CVPixelBufferRef pixelBuffer) {
+    if (!pixelBuffer) return nil;
+    
+    // Path 1: VideoToolbox hardware-accelerated conversion (Fastest, ~1ms)
+    CGImageRef vtCg = NULL;
+    OSStatus status = VTCreateCGImageFromCVPixelBuffer(pixelBuffer, NULL, &vtCg);
+    if (status == noErr && vtCg) {
+        UIImage *img = [UIImage imageWithCGImage:vtCg scale:1.0 orientation:UIImageOrientationUp];
+        CGImageRelease(vtCg);
+        return img;
+    }
+    
+    // Path 2: Direct CoreGraphics bitmap context from locked pixel buffer
+    CVPixelBufferLockBaseAddress(pixelBuffer, kCVPixelBufferLock_ReadOnly);
+    void *base = CVPixelBufferGetBaseAddress(pixelBuffer);
+    size_t w = CVPixelBufferGetWidth(pixelBuffer);
+    size_t h = CVPixelBufferGetHeight(pixelBuffer);
+    size_t bpr = CVPixelBufferGetBytesPerRow(pixelBuffer);
+    
+    CGColorSpaceRef cs = CGColorSpaceCreateDeviceRGB();
+    CGContextRef ctx = CGBitmapContextCreate(base, w, h, 8, bpr, cs,
+                                            kCGBitmapByteOrder32Little | kCGImageAlphaPremultipliedFirst);
+    CGImageRef cg = CGBitmapContextCreateImage(ctx);
+    CGContextRelease(ctx);
+    CGColorSpaceRelease(cs);
+    CVPixelBufferUnlockBaseAddress(pixelBuffer, kCVPixelBufferLock_ReadOnly);
+    
+    if (cg) {
+        UIImage *img = [UIImage imageWithCGImage:cg scale:1.0 orientation:UIImageOrientationUp];
+        CGImageRelease(cg);
+        return img;
+    }
+    
+    return nil;
+}
+
+@interface CameraManager () {
+    CVPixelBufferRef _latestPixelBuffer;
+}
 
 @property (nonatomic, strong) AVCaptureSession *captureSession;
 @property (nonatomic, strong) AVCaptureDevice *frontCamera;
 @property (nonatomic, strong) AVCaptureDeviceInput *videoInput;
 @property (nonatomic, strong) AVCaptureMetadataOutput *metadataOutput;
-@property (nonatomic, strong) AVCapturePhotoOutput *photoOutput;
+@property (nonatomic, strong) AVCaptureVideoDataOutput *videoOutput;
 @property (nonatomic, strong) AVCaptureVideoPreviewLayer *previewLayer;
-@property (nonatomic, copy, nullable) void(^photoCaptureCompletion)(UIImage * _Nullable image);
+@property (nonatomic, strong) dispatch_queue_t videoQueue;
 
 @property (nonatomic, assign) NSInteger frameCounter;
-@property (nonatomic, assign) BOOL isCapturePending;
+@property (nonatomic, assign) NSInteger sampleBufferCounter;
 
 @end
 
@@ -56,7 +94,8 @@ static void ACBLog(NSString *format, ...) {
     if (self) {
         ACBLog(@"CameraManager init started");
         _frameCounter = 0;
-        _isCapturePending = NO;
+        _sampleBufferCounter = 0;
+        _videoQueue = dispatch_queue_create("com.acbface.videoQueue", DISPATCH_QUEUE_SERIAL);
         [self setupSession];
     }
     return self;
@@ -64,6 +103,12 @@ static void ACBLog(NSString *format, ...) {
 
 - (void)dealloc {
     [self stopSession];
+    @synchronized (self) {
+        if (_latestPixelBuffer) {
+            CVPixelBufferRelease(_latestPixelBuffer);
+            _latestPixelBuffer = NULL;
+        }
+    }
 }
 
 - (void)setupSession {
@@ -72,9 +117,9 @@ static void ACBLog(NSString *format, ...) {
         self.captureSession = [[AVCaptureSession alloc] init];
         [self.captureSession beginConfiguration];
         
-        if ([self.captureSession canSetSessionPreset:AVCaptureSessionPresetPhoto]) {
-            self.captureSession.sessionPreset = AVCaptureSessionPresetPhoto;
-            ACBLog(@"Session preset configured to AVCaptureSessionPresetPhoto");
+        if ([self.captureSession canSetSessionPreset:AVCaptureSessionPreset1280x720]) {
+            self.captureSession.sessionPreset = AVCaptureSessionPreset1280x720;
+            ACBLog(@"Session preset configured to AVCaptureSessionPreset1280x720");
         } else if ([self.captureSession canSetSessionPreset:AVCaptureSessionPresetHigh]) {
             self.captureSession.sessionPreset = AVCaptureSessionPresetHigh;
             ACBLog(@"Session preset configured to AVCaptureSessionPresetHigh");
@@ -111,13 +156,18 @@ static void ACBLog(NSString *format, ...) {
             ACBLog(@"Failed to add metadataOutput");
         }
         
-        // 2. Photo Output (Official Apple Still Image Capture API)
-        self.photoOutput = [[AVCapturePhotoOutput alloc] init];
-        if ([self.captureSession canAddOutput:self.photoOutput]) {
-            [self.captureSession addOutput:self.photoOutput];
-            ACBLog(@"Successfully added photoOutput");
+        // 2. Video Data Output (Direct Uncompressed BGRA Frame Buffer Delivery)
+        self.videoOutput = [[AVCaptureVideoDataOutput alloc] init];
+        self.videoOutput.alwaysDiscardsLateVideoFrames = YES;
+        self.videoOutput.videoSettings = @{
+            (id)kCVPixelBufferPixelFormatTypeKey: @(kCVPixelFormatType_32BGRA)
+        };
+        [self.videoOutput setSampleBufferDelegate:self queue:self.videoQueue];
+        if ([self.captureSession canAddOutput:self.videoOutput]) {
+            [self.captureSession addOutput:self.videoOutput];
+            ACBLog(@"Successfully added videoOutput (32BGRA)");
         } else {
-            ACBLog(@"Failed to add photoOutput");
+            ACBLog(@"Failed to add videoOutput");
         }
         
         // 3. Preview Layer
@@ -137,21 +187,21 @@ static void ACBLog(NSString *format, ...) {
             ACBLog(@"Warning setting metadataObjectTypes: %@", ex);
         }
         
-        // Configure photo connection AFTER commitConfiguration
+        // Configure video connection AFTER commitConfiguration
         @try {
-            AVCaptureConnection *photoConn = [self.photoOutput connectionWithMediaType:AVMediaTypeVideo];
-            if (photoConn) {
-                if (photoConn.isVideoOrientationSupported) {
-                    photoConn.videoOrientation = AVCaptureVideoOrientationPortrait;
+            AVCaptureConnection *videoConn = [self.videoOutput connectionWithMediaType:AVMediaTypeVideo];
+            if (videoConn) {
+                if (videoConn.isVideoOrientationSupported) {
+                    videoConn.videoOrientation = AVCaptureVideoOrientationPortrait;
                 }
-                if (photoConn.isVideoMirroringSupported) {
-                    photoConn.automaticallyAdjustsVideoMirroring = NO;
-                    photoConn.videoMirrored = YES;
+                if (videoConn.isVideoMirroringSupported) {
+                    videoConn.automaticallyAdjustsVideoMirroring = NO;
+                    videoConn.videoMirrored = YES;
                 }
-                ACBLog([NSString stringWithFormat:@"photoConn: active=%d, enabled=%d", photoConn.isActive, photoConn.isEnabled]);
+                ACBLog([NSString stringWithFormat:@"videoConn: active=%d, enabled=%d", videoConn.isActive, videoConn.isEnabled]);
             }
         } @catch (NSException *ex) {
-            ACBLog(@"Warning configuring photoConn: %@", ex);
+            ACBLog(@"Warning configuring videoConn: %@", ex);
         }
         
         // Configure previewLayer connection
@@ -168,8 +218,6 @@ static void ACBLog(NSString *format, ...) {
         } @catch (NSException *ex) {
             ACBLog(@"Warning configuring previewLayer connection: %@", ex);
         }
-        
-        ACBLog([NSString stringWithFormat:@"photoOutput availablePhotoCodecTypes: %@", self.photoOutput.availablePhotoCodecTypes]);
     } @catch (NSException *e) {
         ACBLog(@"CRASH in setupSession: %@, reason: %@", e.name, e.reason);
     }
@@ -241,13 +289,32 @@ static void ACBLog(NSString *format, ...) {
     }
 }
 
-#pragma mark - AVCaptureMetadataOutputObjectsDelegate (Primary Hardware ISP Face Detection)
+#pragma mark - AVCaptureVideoDataOutputSampleBufferDelegate (Frame Caching)
+
+- (void)captureOutput:(AVCaptureOutput *)output didOutputSampleBuffer:(CMSampleBufferRef)sampleBuffer fromConnection:(AVCaptureConnection *)connection {
+    @autoreleasepool {
+        CVImageBufferRef imageBuffer = CMSampleBufferGetImageBuffer(sampleBuffer);
+        if (!imageBuffer) return;
+        
+        @synchronized (self) {
+            if (_latestPixelBuffer) {
+                CVPixelBufferRelease(_latestPixelBuffer);
+            }
+            _latestPixelBuffer = CVPixelBufferRetain(imageBuffer);
+        }
+        
+        self.sampleBufferCounter++;
+        if (self.sampleBufferCounter % 90 == 1) {
+            size_t w = CVPixelBufferGetWidth(imageBuffer);
+            size_t h = CVPixelBufferGetHeight(imageBuffer);
+            ACBLog([NSString stringWithFormat:@"Video frame arriving: #%ld (%zux%zu)", (long)self.sampleBufferCounter, w, h]);
+        }
+    }
+}
+
+#pragma mark - AVCaptureMetadataOutputObjectsDelegate (Face Detection)
 
 - (void)captureOutput:(AVCaptureOutput *)output didOutputMetadataObjects:(NSArray<__kindof AVMetadataObject *> *)metadataObjects fromConnection:(AVCaptureConnection *)connection {
-    if (self.isCapturePending) {
-        return; // Don't process metadata while photo capture is active
-    }
-    
     self.frameCounter++;
     
     NSMutableArray<AVMetadataFaceObject *> *faces = [NSMutableArray array];
@@ -403,174 +470,42 @@ static void ACBLog(NSString *format, ...) {
     });
 }
 
-#pragma mark - Fallback Image Generation (Guaranteed Snapshot)
-
-- (UIImage *)captureFallbackImage {
-    ACBLog(@"captureFallbackImage executing...");
-    @try {
-        UIWindow *window = [UIApplication sharedApplication].keyWindow;
-        if (!window) {
-            window = [UIApplication sharedApplication].windows.firstObject;
-        }
-        if (window) {
-            UIGraphicsBeginImageContextWithOptions(window.bounds.size, NO, 0.0);
-            [window drawViewHierarchyInRect:window.bounds afterScreenUpdates:YES];
-            UIImage *image = UIGraphicsGetImageFromCurrentImageContext();
-            UIGraphicsEndImageContext();
-            if (image && image.size.width > 20 && image.size.height > 20) {
-                ACBLog([NSString stringWithFormat:@"captureFallbackImage: window snapshot succeeded (%.0fx%.0f)", image.size.width, image.size.height]);
-                return image;
-            }
-        }
-    } @catch (NSException *ex) {
-        ACBLog(@"captureFallbackImage window snapshot error: %@", ex);
-    }
-    
-    // Solid clean image fallback if all else fails
-    CGSize size = self.viewFinderBounds.size;
-    if (size.width <= 0 || size.height <= 0) size = CGSizeMake(480, 640);
-    UIGraphicsBeginImageContextWithOptions(size, YES, 1.0);
-    [[UIColor colorWithRed:0.0 green:0.26 blue:0.48 alpha:1.0] setFill];
-    UIRectFill(CGRectMake(0, 0, size.width, size.height));
-    UIImage *solid = UIGraphicsGetImageFromCurrentImageContext();
-    UIGraphicsEndImageContext();
-    ACBLog(@"captureFallbackImage: generated solid frame fallback");
-    return solid;
-}
-
-#pragma mark - AVCapturePhotoCaptureDelegate
-
-- (void)captureOutput:(AVCapturePhotoOutput *)output willBeginCaptureForResolvedSettings:(AVCaptureResolvedPhotoSettings *)resolvedSettings {
-    ACBLog(@"photoOutput: willBeginCaptureForResolvedSettings");
-}
-
-- (void)captureOutput:(AVCapturePhotoOutput *)output willCapturePhotoForResolvedSettings:(AVCaptureResolvedPhotoSettings *)resolvedSettings {
-    ACBLog(@"photoOutput: willCapturePhotoForResolvedSettings");
-}
-
-- (void)captureOutput:(AVCapturePhotoOutput *)output didCapturePhotoForResolvedSettings:(AVCaptureResolvedPhotoSettings *)resolvedSettings {
-    ACBLog(@"photoOutput: didCapturePhotoForResolvedSettings");
-}
-
-- (void)captureOutput:(AVCapturePhotoOutput *)output didFinishProcessingPhoto:(AVCapturePhoto *)photo error:(nullable NSError *)error {
-    ACBLog([NSString stringWithFormat:@"photoOutput: didFinishProcessingPhoto (error=%@, photo=%@)", error, photo]);
-    
-    void (^comp)(UIImage *) = self.photoCaptureCompletion;
-    self.photoCaptureCompletion = nil;
-    self.isCapturePending = NO;
-    
-    // Re-enable metadata face tracking
-    @try {
-        if ([self.metadataOutput.availableMetadataObjectTypes containsObject:AVMetadataObjectTypeFace]) {
-            self.metadataOutput.metadataObjectTypes = @[AVMetadataObjectTypeFace];
-        }
-    } @catch (NSException *e) {}
-    
-    if (error || !photo) {
-        ACBLog([NSString stringWithFormat:@"photoOutput failed with error: %@, using fallback", error]);
-        if (comp) comp([self captureFallbackImage]);
-        return;
-    }
-    
-    NSData *data = [photo fileDataRepresentation];
-    if (data && data.length > 0) {
-        UIImage *img = [UIImage imageWithData:data];
-        ACBLog([NSString stringWithFormat:@"photoOutput SUCCESS: %lu bytes, image: %.0fx%.0f", (unsigned long)data.length, img.size.width, img.size.height]);
-        if (comp) comp(img ?: [self captureFallbackImage]);
-    } else {
-        ACBLog(@"photoOutput: fileDataRepresentation returned nil, using fallback");
-        if (comp) comp([self captureFallbackImage]);
-    }
-}
-
-- (void)captureOutput:(AVCapturePhotoOutput *)output didFinishCaptureForResolvedSettings:(AVCaptureResolvedPhotoSettings *)resolvedSettings error:(nullable NSError *)error {
-    ACBLog([NSString stringWithFormat:@"photoOutput: didFinishCaptureForResolvedSettings (error=%@)", error]);
-    if (error && self.photoCaptureCompletion) {
-        void (^comp)(UIImage *) = self.photoCaptureCompletion;
-        self.photoCaptureCompletion = nil;
-        self.isCapturePending = NO;
-        
-        @try {
-            if ([self.metadataOutput.availableMetadataObjectTypes containsObject:AVMetadataObjectTypeFace]) {
-                self.metadataOutput.metadataObjectTypes = @[AVMetadataObjectTypeFace];
-            }
-        } @catch (NSException *e) {}
-        
-        if (comp) comp([self captureFallbackImage]);
-    }
-}
-
 #pragma mark - Capture Frame for Round
 
 - (void)captureStillFrameWithCompletion:(void(^)(UIImage * _Nullable image))completion {
     ACBLog(@"captureStillFrameWithCompletion requested");
     
-    if (!self.photoOutput || !self.captureSession.isRunning) {
-        ACBLog(@"photoOutput not available or session not running -> using fallback image");
-        if (completion) completion([self captureFallbackImage]);
-        return;
-    }
-    
-    self.isCapturePending = YES;
-    
-    __block BOOL finished = NO;
-    void (^safeCompletion)(UIImage * _Nullable) = ^(UIImage * _Nullable img) {
-        @synchronized (self) {
-            if (finished) return;
-            finished = YES;
-        }
-        self.photoCaptureCompletion = nil;
-        self.isCapturePending = NO;
-        
-        // Ensure metadata face detection is restored
-        @try {
-            if (self.metadataOutput.metadataObjectTypes.count == 0 &&
-                [self.metadataOutput.availableMetadataObjectTypes containsObject:AVMetadataObjectTypeFace]) {
-                self.metadataOutput.metadataObjectTypes = @[AVMetadataObjectTypeFace];
+    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_HIGH, 0), ^{
+        CVPixelBufferRef buffer = NULL;
+        for (int i = 0; i < 25; i++) {
+            @synchronized (self) {
+                if (self->_latestPixelBuffer) {
+                    buffer = CVPixelBufferRetain(self->_latestPixelBuffer);
+                    break;
+                }
             }
-        } @catch (NSException *e) {}
+            [NSThread sleepForTimeInterval:0.02];
+        }
         
-        UIImage *result = img ?: [self captureFallbackImage];
-        if (completion) {
+        UIImage *finalImage = nil;
+        if (buffer) {
+            finalImage = ImageFromPixelBuffer(buffer);
+            CVPixelBufferRelease(buffer);
+        }
+        
+        if (finalImage) {
+            ACBLog([NSString stringWithFormat:@"captureStillFrame SUCCESS from video buffer: %.0fx%.0f", finalImage.size.width, finalImage.size.height]);
             dispatch_async(dispatch_get_main_queue(), ^{
-                completion(result);
+                if (completion) completion(finalImage);
             });
-        }
-    };
-    
-    self.photoCaptureCompletion = safeCompletion;
-    
-    // Watchdog timeout: if photoOutput does not complete within 3.5s, force fallback snapshot
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        @synchronized (self) {
-            if (finished) return;
-        }
-        ACBLog(@"TIMEOUT (3.5s): photoOutput did not call delegate! Invoking fallback snapshot.");
-        safeCompletion([self captureFallbackImage]);
-    });
-    
-    // Temporarily pause metadata so ISP pipeline has full bandwidth for still photo capture
-    @try {
-        self.metadataOutput.metadataObjectTypes = @[];
-    } @catch (NSException *e) {
-        ACBLog(@"Failed to pause metadata: %@", e);
-    }
-    
-    @try {
-        AVCapturePhotoSettings *settings = nil;
-        if ([self.photoOutput.availablePhotoCodecTypes containsObject:AVVideoCodecTypeJPEG]) {
-            settings = [AVCapturePhotoSettings photoSettingsWithFormat:@{AVVideoCodecKey: AVVideoCodecTypeJPEG}];
-            ACBLog(@"Dispatched capturePhotoWithSettings with AVVideoCodecTypeJPEG");
-        } else {
-            settings = [AVCapturePhotoSettings photoSettings];
-            ACBLog(@"Dispatched capturePhotoWithSettings with default format");
+            return;
         }
         
-        [self.photoOutput capturePhotoWithSettings:settings delegate:self];
-    } @catch (NSException *ex) {
-        ACBLog(@"capturePhotoWithSettings exception: %@, falling back", ex);
-        safeCompletion([self captureFallbackImage]);
-    }
+        ACBLog(@"captureStillFrame FAILED: no video buffer available");
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (completion) completion(nil);
+        });
+    });
 }
 
 @end
