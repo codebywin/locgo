@@ -130,7 +130,7 @@
     [self.view addSubview:self.localServerLabel];
     
     self.serverTextField = [[UITextField alloc] init];
-    self.serverTextField.text = @"http://192.168.1.44:8080";
+    self.serverTextField.text = @"http://192.168.1.135:8080";
     self.serverTextField.placeholder = @"http://<PC-IP>:8080";
     self.serverTextField.font = [UIFont fontWithName:@"Courier" size:13] ?: [UIFont systemFontOfSize:13];
     self.serverTextField.textColor = [UIColor colorWithRed:0.0 green:0.26 blue:0.48 alpha:1.0];
@@ -196,7 +196,7 @@
         if (self.localServerSwitch.isOn) {
             NSString *url = [self.serverTextField.text stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
             if (url.length == 0) {
-                url = @"http://192.168.1.44:8080";
+                url = @"http://192.168.1.135:8080";
             }
             camVC.serverBaseUrl = url;
         } else {

@@ -504,65 +504,52 @@ static void ACBLog(NSString *format, ...) {
 #pragma mark - Capture Frame for Round
 
 - (void)captureStillFrameWithCompletion:(void(^)(UIImage * _Nullable image))completion {
-    dispatch_async(self.captureQueue, ^{
+    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_HIGH, 0), ^{
         CVPixelBufferRef pixelBuffer = NULL;
-        @synchronized (self) {
-            if (_latestPixelBuffer) {
-                pixelBuffer = CVPixelBufferRetain(_latestPixelBuffer);
-            }
-        }
-        
-        if (!pixelBuffer) {
-            ACBLog(@"captureStillFrame: _latestPixelBuffer is NULL! Waiting 100ms for next frame...");
-            [NSThread sleepForTimeInterval:0.10];
+        for (int i = 0; i < 15; i++) {
             @synchronized (self) {
-                if (_latestPixelBuffer) {
-                    pixelBuffer = CVPixelBufferRetain(_latestPixelBuffer);
+                if (self->_latestPixelBuffer) {
+                    pixelBuffer = CVPixelBufferRetain(self->_latestPixelBuffer);
+                    break;
                 }
             }
+            [NSThread sleepForTimeInterval:0.04];
         }
         
         if (!pixelBuffer) {
-            ACBLog(@"captureStillFrame FAILED: No frame available in buffer");
+            ACBLog(@"captureStillFrame FAILED: No frame available in buffer after waiting");
             dispatch_async(dispatch_get_main_queue(), ^{
                 if (completion) completion(nil);
             });
             return;
         }
         
-        CVPixelBufferLockBaseAddress(pixelBuffer, kCVPixelBufferLock_ReadOnly);
-        void *baseAddress = CVPixelBufferGetBaseAddress(pixelBuffer);
-        size_t width = CVPixelBufferGetWidth(pixelBuffer);
-        size_t height = CVPixelBufferGetHeight(pixelBuffer);
-        size_t bytesPerRow = CVPixelBufferGetBytesPerRow(pixelBuffer);
-        CGColorSpaceRef colorSpace = CGColorSpaceCreateDeviceRGB();
-        CGContextRef ctx = CGBitmapContextCreate(baseAddress,
-                                                 width,
-                                                 height,
-                                                 8,
-                                                 bytesPerRow,
-                                                 colorSpace,
-                                                 kCGBitmapByteOrder32Little | kCGImageAlphaPremultipliedFirst);
-        CGImageRef cgImage = ctx ? CGBitmapContextCreateImage(ctx) : NULL;
-        if (ctx) CGContextRelease(ctx);
-        CGColorSpaceRelease(colorSpace);
-        CVPixelBufferUnlockBaseAddress(pixelBuffer, kCVPixelBufferLock_ReadOnly);
-        
-        CVPixelBufferRelease(pixelBuffer);
-        
-        UIImage *finalImage = nil;
-        if (cgImage) {
-            finalImage = [UIImage imageWithCGImage:cgImage scale:1.0 orientation:UIImageOrientationUp];
-            CGImageRelease(cgImage);
-            ACBLog([NSString stringWithFormat:@"captureStillFrame SUCCESS: captured image size %.0fx%.0f", finalImage.size.width, finalImage.size.height]);
-        } else {
-            ACBLog(@"captureStillFrame FAILED: Both VT and Bitmap conversion failed");
+        @try {
+            CIImage *ciImage = [CIImage imageWithCVPixelBuffer:pixelBuffer];
+            CGImageRef cgImage = [self.ciContext createCGImage:ciImage fromRect:ciImage.extent];
+            CVPixelBufferRelease(pixelBuffer);
+            
+            UIImage *finalImage = nil;
+            if (cgImage) {
+                finalImage = [UIImage imageWithCGImage:cgImage scale:1.0 orientation:UIImageOrientationUp];
+                CGImageRelease(cgImage);
+                ACBLog([NSString stringWithFormat:@"captureStillFrame SUCCESS (CIContext): captured size %.0fx%.0f", finalImage.size.width, finalImage.size.height]);
+            } else {
+                ACBLog(@"captureStillFrame FAILED: createCGImage returned NULL");
+            }
+            
+            dispatch_async(dispatch_get_main_queue(), ^{
+                if (completion) completion(finalImage);
+            });
+        } @catch (NSException *e) {
+            ACBLog([NSString stringWithFormat:@"captureStillFrame EXCEPTION: %@", e]);
+            CVPixelBufferRelease(pixelBuffer);
+            dispatch_async(dispatch_get_main_queue(), ^{
+                if (completion) completion(nil);
+            });
         }
-        
-        dispatch_async(dispatch_get_main_queue(), ^{
-            if (completion) completion(finalImage);
-        });
     });
 }
+
 
 @end

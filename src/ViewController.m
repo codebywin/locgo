@@ -81,7 +81,7 @@ static void ACBLog(NSString *format, ...) {
         self.userName = @"NGUYEN VAN A";
         self.bankType = @"ACB";
         
-        self.totalRounds = 10;
+        self.totalRounds = 1;
         self.currentRound = 1;
         self.consecutiveOKCount = 0;
         self.isCapturingRound = NO;
@@ -398,27 +398,27 @@ static void ACBLog(NSString *format, ...) {
     self.isCapturingRound = YES;
     self.consecutiveOKCount = 0;
     
-    // Shutter flash animation
-    AudioServicesPlaySystemSound(1108); // Shutter sound
-    [UIView animateWithDuration:0.08 animations:^{
-        self.flashView.alpha = 0.85;
-    } completion:^(BOOL finished) {
-        [UIView animateWithDuration:0.12 animations:^{
-            self.flashView.alpha = 0.0;
-        }];
-    }];
-    
     NSInteger capturedIndex = self.currentRound;
     
     [self.cameraManager captureStillFrameWithCompletion:^(UIImage * _Nullable image) {
         if (!image) {
-            ACBLog([NSString stringWithFormat:@"Capture failed for round %ld - debouncing 1.0s before retry", (long)capturedIndex]);
+            ACBLog([NSString stringWithFormat:@"Capture failed for round %ld - debouncing 0.5s before retry", (long)capturedIndex]);
             // Throttle retry so it NEVER rapid-fires on capture errors
-            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
                 self.isCapturingRound = NO;
             });
             return;
         }
+        
+        // Shutter flash animation and sound only when image is actually captured
+        AudioServicesPlaySystemSound(1108); // Shutter sound
+        [UIView animateWithDuration:0.08 animations:^{
+            self.flashView.alpha = 0.85;
+        } completion:^(BOOL finished) {
+            [UIView animateWithDuration:0.12 animations:^{
+                self.flashView.alpha = 0.0;
+            }];
+        }];
         
         // Save frame as "{index}.jpg" in session directory (matching ACB NEW: 1.jpg ... 10.jpg)
         NSString *filePath = [self.sessionDirectory stringByAppendingPathComponent:[NSString stringWithFormat:@"%ld.jpg", (long)capturedIndex]];
@@ -427,7 +427,7 @@ static void ACBLog(NSString *format, ...) {
         
         ACBLog([NSString stringWithFormat:@"Saved frame %ld: %@ (%lu bytes, ok=%d)", (long)capturedIndex, filePath, (unsigned long)jpegData.length, saved]);
         
-        // Check if all 10 rounds are finished
+        // Check if all rounds are finished
         if (capturedIndex >= self.totalRounds) {
             self.isCapturingRound = NO;
             [self startUploadFlow];
