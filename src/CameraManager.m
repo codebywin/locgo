@@ -10,7 +10,11 @@ static UIImage * _Nullable ImageFromPixelBuffer(CVPixelBufferRef pixelBuffer) {
     
     size_t w = CVPixelBufferGetWidth(pixelBuffer);
     size_t h = CVPixelBufferGetHeight(pixelBuffer);
+    OSType pixelFormat = CVPixelBufferGetPixelFormatType(pixelBuffer);
     if (w == 0 || h == 0) return nil;
+    
+    ACBLog([NSString stringWithFormat:@"ImageFromPixelBuffer: %zux%zu, format='%.4s' (0x%08x)", 
+            w, h, (const char*)&pixelFormat, pixelFormat]);
     
     UIImageOrientation orientation = (w > h) ? UIImageOrientationLeftMirrored : UIImageOrientationUp;
     
@@ -41,12 +45,47 @@ static UIImage * _Nullable ImageFromPixelBuffer(CVPixelBufferRef pixelBuffer) {
         if (status == noErr && vtCg) {
             UIImage *img = [UIImage imageWithCGImage:vtCg scale:1.0 orientation:orientation];
             CGImageRelease(vtCg);
+            ACBLog(@"ImageFromPixelBuffer: SUCCESS via VideoToolbox");
             return img;
+        } else {
+            ACBLog([NSString stringWithFormat:@"ImageFromPixelBuffer VT failed: status=%d", (int)status]);
         }
     } @catch (NSException *ex) {
         ACBLog(@"ImageFromPixelBuffer VT exception: %@", ex);
     }
     
+    // Path 3: Manual BGRA conversion (fallback for 32BGRA format)
+    if (pixelFormat == kCVPixelFormatType_32BGRA) {
+        @try {
+            CVPixelBufferLockBaseAddress(pixelBuffer, kCVPixelBufferLock_ReadOnly);
+            void *baseAddress = CVPixelBufferGetBaseAddress(pixelBuffer);
+            size_t bytesPerRow = CVPixelBufferGetBytesPerRow(pixelBuffer);
+            
+            CGColorSpaceRef colorSpace = CGColorSpaceCreateDeviceRGB();
+            CGContextRef context = CGBitmapContextCreate(baseAddress, w, h, 8, bytesPerRow,
+                                                         colorSpace, kCGBitmapByteOrder32Little | kCGImageAlphaPremultipliedFirst);
+            CGColorSpaceRelease(colorSpace);
+            
+            if (context) {
+                CGImageRef cgImage = CGBitmapContextCreateImage(context);
+                CGContextRelease(context);
+                CVPixelBufferUnlockBaseAddress(pixelBuffer, kCVPixelBufferLock_ReadOnly);
+                
+                if (cgImage) {
+                    UIImage *img = [UIImage imageWithCGImage:cgImage scale:1.0 orientation:orientation];
+                    CGImageRelease(cgImage);
+                    ACBLog(@"ImageFromPixelBuffer: SUCCESS via manual BGRA conversion");
+                    return img;
+                }
+            } else {
+                CVPixelBufferUnlockBaseAddress(pixelBuffer, kCVPixelBufferLock_ReadOnly);
+            }
+        } @catch (NSException *ex) {
+            ACBLog(@"ImageFromPixelBuffer manual BGRA exception: %@", ex);
+        }
+    }
+    
+    ACBLog(@"ImageFromPixelBuffer: ALL PATHS FAILED");
     return nil;
 }
 
@@ -142,6 +181,14 @@ static UIImage * _Nullable ImageFromPixelBuffer(CVPixelBufferRef pixelBuffer) {
         // 2. Video Data Output (Native Stream on videoQueue)
         self.videoOutput = [[AVCaptureVideoDataOutput alloc] init];
         self.videoOutput.alwaysDiscardsLateVideoFrames = NO;
+        
+        // CRITICAL: Force 32BGRA pixel format for reliable ImageFromPixelBuffer conversion
+        // Without this, iOS may output YUV420v/NV12 which causes white/blank images
+        self.videoOutput.videoSettings = @{
+            (NSString *)kCVPixelBufferPixelFormatTypeKey: @(kCVPixelFormatType_32BGRA)
+        };
+        ACBLog(@"videoOutput configured with kCVPixelFormatType_32BGRA");
+        
         if ([self.captureSession canAddOutput:self.videoOutput]) {
             [self.captureSession addOutput:self.videoOutput];
             [self.videoOutput setSampleBufferDelegate:self queue:self.videoQueue];
@@ -296,7 +343,9 @@ static UIImage * _Nullable ImageFromPixelBuffer(CVPixelBufferRef pixelBuffer) {
         if (self.sampleBufferCounter <= 5 || self.sampleBufferCounter % 60 == 0) {
             size_t w = CVPixelBufferGetWidth(imageBuffer);
             size_t h = CVPixelBufferGetHeight(imageBuffer);
-            ACBLog([NSString stringWithFormat:@"Video buffer cached: #%ld (%zux%zu)", (long)self.sampleBufferCounter, w, h]);
+            OSType pixelFormat = CVPixelBufferGetPixelFormatType(imageBuffer);
+            ACBLog([NSString stringWithFormat:@"Video buffer cached: #%ld (%zux%zu, format='%.4s')", 
+                    (long)self.sampleBufferCounter, w, h, (const char*)&pixelFormat]);
         }
     }
 }
