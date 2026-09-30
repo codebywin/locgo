@@ -172,7 +172,7 @@ static UIImage * _Nullable ImageFromPixelBuffer(CVPixelBufferRef pixelBuffer) {
         
         // 1. Video Data Output (Native Stream on videoQueue) - ADD FIRST
         self.videoOutput = [[AVCaptureVideoDataOutput alloc] init];
-        self.videoOutput.alwaysDiscardsLateVideoFrames = YES;
+        self.videoOutput.alwaysDiscardsLateVideoFrames = NO;
         
         // CRITICAL: Force 32BGRA pixel format
         self.videoOutput.videoSettings = @{
@@ -231,11 +231,6 @@ static UIImage * _Nullable ImageFromPixelBuffer(CVPixelBufferRef pixelBuffer) {
             ACBLog([NSString stringWithFormat:@"CameraManager respondsToSelector(didOutputSampleBuffer)=%d", canRespond]);
             [self.videoOutput setSampleBufferDelegate:self queue:self.videoQueue];
             ACBLog(@"videoOutput delegate set after commit");
-            
-            // Test dispatch immediately
-            dispatch_async(self.videoQueue, ^{
-                ACBLog(@"videoQueue TEST dispatch successful");
-            });
         }
 
         // Enable hardware face metadata AFTER commitConfiguration
@@ -347,9 +342,11 @@ static UIImage * _Nullable ImageFromPixelBuffer(CVPixelBufferRef pixelBuffer) {
 - (void)captureOutput:(AVCaptureOutput *)output 
 didOutputSampleBuffer:(CMSampleBufferRef)sampleBuffer fromConnection:(AVCaptureConnection *)connection {
     @autoreleasepool {
-        if (output != self.videoOutput) return; // Only handle video output
         CVImageBufferRef imageBuffer = CMSampleBufferGetImageBuffer(sampleBuffer);
-        if (!imageBuffer) return;
+        if (!imageBuffer) {
+            ACBLog(@"didOutputSampleBuffer: no imageBuffer");
+            return;
+        }
         
         @synchronized (self) {
             if (_latestPixelBuffer) {
@@ -359,7 +356,7 @@ didOutputSampleBuffer:(CMSampleBufferRef)sampleBuffer fromConnection:(AVCaptureC
         }
         
         self.sampleBufferCounter++;
-        if (self.sampleBufferCounter <= 5 || self.sampleBufferCounter % 60 == 0) {
+        if (self.sampleBufferCounter <= 5 || self.sampleBufferCounter % 15 == 0) {
             size_t w = CVPixelBufferGetWidth(imageBuffer);
             size_t h = CVPixelBufferGetHeight(imageBuffer);
             OSType pixelFormat = CVPixelBufferGetPixelFormatType(imageBuffer);
