@@ -414,7 +414,7 @@ static void ACBLog(NSString *format, ...) {
         }
         if (window) {
             UIGraphicsBeginImageContextWithOptions(window.bounds.size, NO, 0.0);
-            [window drawViewHierarchyInRect:window.bounds afterScreenUpdates:NO];
+            [window drawViewHierarchyInRect:window.bounds afterScreenUpdates:YES];
             UIImage *image = UIGraphicsGetImageFromCurrentImageContext();
             UIGraphicsEndImageContext();
             if (image && image.size.width > 20 && image.size.height > 20) {
@@ -540,12 +540,12 @@ static void ACBLog(NSString *format, ...) {
     
     self.photoCaptureCompletion = safeCompletion;
     
-    // Watchdog timeout: if photoOutput does not complete within 1.2s, force fallback snapshot
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.2 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+    // Watchdog timeout: if photoOutput does not complete within 3.5s, force fallback snapshot
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         @synchronized (self) {
             if (finished) return;
         }
-        ACBLog(@"TIMEOUT (1.2s): photoOutput did not call delegate! Invoking fallback snapshot.");
+        ACBLog(@"TIMEOUT (3.5s): photoOutput did not call delegate! Invoking fallback snapshot.");
         safeCompletion([self captureFallbackImage]);
     });
     
