@@ -44,6 +44,7 @@ jobs:
               -framework QuartzCore \
               -framework CoreMedia \
               -framework CoreVideo \
+              -framework VideoToolbox \
               -framework Vision \
               -framework AudioToolbox \
               -framework ImageIO \
