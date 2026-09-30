@@ -6,7 +6,7 @@ include $(THEOS)/makefiles/common.mk
 APPLICATION_NAME = ACBFace
 
 ACBFace_FILES = $(wildcard src/*.m)
-ACBFace_FRAMEWORKS = UIKit AVFoundation CoreGraphics CoreImage QuartzCore
+ACBFace_FRAMEWORKS = UIKit AVFoundation CoreGraphics CoreImage QuartzCore VideoToolbox
 ACBFace_LIBRARIES = z
 ACBFace_CFLAGS = -fobjc-arc
 ACBFace_CODESIGN_FLAGS = -Sentitlements.plist

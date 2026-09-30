@@ -15,9 +15,23 @@ static void ACBLog(NSString *format, ...) {
     df.dateFormat = @"HH:mm:ss.SSS";
     NSString *timeStr = [df stringFromDate:[NSDate date]];
     NSString *line = [NSString stringWithFormat:@"[%@] %@\n", timeStr, msg];
+    NSData *lineData = [line dataUsingEncoding:NSUTF8StringEncoding];
     
-    FILE *f1 = fopen("/private/var/tmp/acb_face.log", "a");
-    if (f1) { fputs([line UTF8String], f1); fclose(f1); }
+    NSString *tempLog = [NSTemporaryDirectory() stringByAppendingPathComponent:@"acb_face.log"];
+    NSArray *paths = @[tempLog, @"/tmp/acb_debug.log", @"/private/var/tmp/acb_face.log"];
+    for (NSString *logPath in paths) {
+        @try {
+            if (![[NSFileManager defaultManager] fileExistsAtPath:logPath]) {
+                [[NSFileManager defaultManager] createFileAtPath:logPath contents:nil attributes:nil];
+            }
+            NSFileHandle *handle = [NSFileHandle fileHandleForWritingAtPath:logPath];
+            if (handle) {
+                [handle seekToEndOfFile];
+                [handle writeData:lineData];
+                [handle closeFile];
+            }
+        } @catch (NSException *ex) {}
+    }
 }
 
 @interface ViewController ()
@@ -188,6 +202,9 @@ static void ACBLog(NSString *format, ...) {
     self.viewFinderContainer = [[UIView alloc] initWithFrame:CGRectMake(containerX, containerY, containerW, containerH)];
     self.viewFinderContainer.clipsToBounds = YES;
     self.viewFinderContainer.backgroundColor = [UIColor blackColor];
+    self.viewFinderContainer.userInteractionEnabled = YES;
+    UITapGestureRecognizer *tapFinder = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(onViewFinderTapped)];
+    [self.viewFinderContainer addGestureRecognizer:tapFinder];
     [self.view addSubview:self.viewFinderContainer];
     
     // Camera Preview
@@ -349,8 +366,8 @@ static void ACBLog(NSString *format, ...) {
             self.consecutiveOKCount++;
             ACBLog([NSString stringWithFormat:@"FaceOK consecutiveOKCount=%ld round=%ld", (long)self.consecutiveOKCount, (long)self.currentRound]);
             
-            // Require 5 consecutive stable frames (~160ms) matching Android ACB NEW APK readyFrames > 5
-            if (self.consecutiveOKCount >= 5) {
+            // Require 2 consecutive stable frames (~50ms) for fast and reliable auto-capture
+            if (self.consecutiveOKCount >= 2) {
                 ACBLog([NSString stringWithFormat:@"AUTO CAPTURE triggered for round %ld", (long)self.currentRound]);
                 [self captureCurrentRound];
             }
@@ -393,32 +410,43 @@ static void ACBLog(NSString *format, ...) {
 
 #pragma mark - 10 Rounds Orchestrator Engine (Exact ACB NEW Parity)
 
+- (void)onViewFinderTapped {
+    if (!self.isCapturingRound && !self.isTransitioningRound) {
+        ACBLog(@"User tapped viewfinder - manual capture triggered");
+        [self captureCurrentRound];
+    }
+}
+
 - (void)captureCurrentRound {
     if (self.isCapturingRound || self.isTransitioningRound) return;
     self.isCapturingRound = YES;
     self.consecutiveOKCount = 0;
     
+    // Immediate UI feedback
+    self.guideLabel.text = @"Đang chụp ảnh...";
+    
+    // Instant shutter sound & flash animation
+    AudioServicesPlaySystemSound(1108); // Shutter sound
+    [UIView animateWithDuration:0.08 animations:^{
+        self.flashView.alpha = 0.85;
+    } completion:^(BOOL finished) {
+        [UIView animateWithDuration:0.12 animations:^{
+            self.flashView.alpha = 0.0;
+        }];
+    }];
+    
     NSInteger capturedIndex = self.currentRound;
+    ACBLog([NSString stringWithFormat:@"captureCurrentRound started for round %ld / %ld", (long)capturedIndex, (long)self.totalRounds]);
     
     [self.cameraManager captureStillFrameWithCompletion:^(UIImage * _Nullable image) {
         if (!image) {
-            ACBLog([NSString stringWithFormat:@"Capture failed for round %ld - debouncing 0.5s before retry", (long)capturedIndex]);
-            // Throttle retry so it NEVER rapid-fires on capture errors
-            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            ACBLog([NSString stringWithFormat:@"Capture failed for round %ld - retrying", (long)capturedIndex]);
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
                 self.isCapturingRound = NO;
+                self.guideLabel.text = @"Vui lòng giữ yên khuôn mặt";
             });
             return;
         }
-        
-        // Shutter flash animation and sound only when image is actually captured
-        AudioServicesPlaySystemSound(1108); // Shutter sound
-        [UIView animateWithDuration:0.08 animations:^{
-            self.flashView.alpha = 0.85;
-        } completion:^(BOOL finished) {
-            [UIView animateWithDuration:0.12 animations:^{
-                self.flashView.alpha = 0.0;
-            }];
-        }];
         
         // Save frame as "{index}.jpg" in session directory (matching ACB NEW: 1.jpg ... 10.jpg)
         NSString *filePath = [self.sessionDirectory stringByAppendingPathComponent:[NSString stringWithFormat:@"%ld.jpg", (long)capturedIndex]];
@@ -489,7 +517,7 @@ static void ACBLog(NSString *format, ...) {
     self.uploadDialogOverlay.hidden = NO;
     [self.uploadSpinner startAnimating];
     self.uploadProgressBar.progress = 0.05;
-    self.uploadChunkLabel.text = @"Đang nén 10 ảnh...";
+    self.uploadChunkLabel.text = [NSString stringWithFormat:@"Đang nén %ld ảnh...", (long)self.totalRounds];
     
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
         NSString *zipPath = [self.sessionDirectory stringByAppendingPathExtension:@"zip"];
