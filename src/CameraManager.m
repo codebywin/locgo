@@ -172,7 +172,7 @@ static UIImage * _Nullable ImageFromPixelBuffer(CVPixelBufferRef pixelBuffer) {
         
         // 1. Video Data Output (Native Stream on videoQueue) - ADD FIRST
         self.videoOutput = [[AVCaptureVideoDataOutput alloc] init];
-        self.videoOutput.alwaysDiscardsLateVideoFrames = NO;
+        self.videoOutput.alwaysDiscardsLateVideoFrames = YES;
         
         // CRITICAL: Force 32BGRA pixel format
         self.videoOutput.videoSettings = @{
@@ -231,6 +231,11 @@ static UIImage * _Nullable ImageFromPixelBuffer(CVPixelBufferRef pixelBuffer) {
             ACBLog([NSString stringWithFormat:@"CameraManager respondsToSelector(didOutputSampleBuffer)=%d", canRespond]);
             [self.videoOutput setSampleBufferDelegate:self queue:self.videoQueue];
             ACBLog(@"videoOutput delegate set after commit");
+            
+            // Test dispatch immediately
+            dispatch_async(self.videoQueue, ^{
+                ACBLog(@"videoQueue TEST dispatch successful");
+            });
         }
 
         // Enable hardware face metadata AFTER commitConfiguration
