@@ -290,8 +290,7 @@ static NSInteger sDroppedFrameCount = 0;
 - (void)captureOutput:(AVCaptureOutput *)output didDropSampleBuffer:(CMSampleBufferRef)sampleBuffer fromConnection:(AVCaptureConnection *)connection {
     sDroppedFrameCount++;
     if (sDroppedFrameCount <= 3 || sDroppedFrameCount % 90 == 0) {
-        id reason = (id)CMGetAttachment(sampleBuffer, kCMSampleBufferDroppedFrameReasonKey, NULL);
-        ACBLog([NSString stringWithFormat:@"didDropSampleBuffer #%ld: reason=%@", (long)sDroppedFrameCount, reason]);
+        ACBLog([NSString stringWithFormat:@"didDropSampleBuffer #%ld", (long)sDroppedFrameCount]);
     }
 }
 
