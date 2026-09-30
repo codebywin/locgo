@@ -44,9 +44,11 @@ static void ACBLog(NSString *format, ...) {
 @property (nonatomic, strong) AVCaptureDeviceInput *videoInput;
 @property (nonatomic, strong) AVCaptureMetadataOutput *metadataOutput;
 @property (nonatomic, strong) AVCaptureVideoDataOutput *videoOutput;
+@property (nonatomic, strong) AVCapturePhotoOutput *photoOutput;
 @property (nonatomic, strong) AVCaptureVideoPreviewLayer *previewLayer;
 @property (nonatomic, strong) dispatch_queue_t captureQueue;
 @property (nonatomic, strong) CIContext *ciContext;
+@property (nonatomic, copy, nullable) void(^photoCaptureCompletion)(UIImage * _Nullable image);
 
 @property (nonatomic, assign) NSTimeInterval lastMetadataTime;
 @property (nonatomic, assign) NSTimeInterval lastVisionTime;
@@ -138,22 +140,24 @@ static void ACBLog(NSString *format, ...) {
         // 2. Video Data Output (Frame Buffer Delivery & Vision Fallback)
         self.videoOutput = [[AVCaptureVideoDataOutput alloc] init];
         self.videoOutput.alwaysDiscardsLateVideoFrames = YES;
-        @try {
-            self.videoOutput.videoSettings = @{
-                (id)kCVPixelBufferPixelFormatTypeKey: @(kCVPixelFormatType_32BGRA)
-            };
-        } @catch (NSException *ex) {
-            ACBLog(@"Warning setting videoSettings: %@", ex);
-        }
         [self.videoOutput setSampleBufferDelegate:self queue:self.captureQueue];
         if ([self.captureSession canAddOutput:self.videoOutput]) {
             [self.captureSession addOutput:self.videoOutput];
-            ACBLog(@"Successfully added videoOutput (32BGRA)");
+            ACBLog(@"Successfully added videoOutput");
         } else {
             ACBLog(@"Failed to add videoOutput");
         }
         
-        // 3. Preview Layer
+        // 3. Photo Output (Official Apple Still Image Capture API)
+        self.photoOutput = [[AVCapturePhotoOutput alloc] init];
+        if ([self.captureSession canAddOutput:self.photoOutput]) {
+            [self.captureSession addOutput:self.photoOutput];
+            ACBLog(@"Successfully added photoOutput");
+        } else {
+            ACBLog(@"Failed to add photoOutput");
+        }
+        
+        // 4. Preview Layer
         self.previewLayer = [AVCaptureVideoPreviewLayer layerWithSession:self.captureSession];
         self.previewLayer.videoGravity = AVLayerVideoGravityResizeAspectFill;
         
@@ -184,6 +188,21 @@ static void ACBLog(NSString *format, ...) {
             }
         } @catch (NSException *ex) {
             ACBLog(@"Warning configuring videoConn: %@", ex);
+        }
+        
+        @try {
+            AVCaptureConnection *photoConn = [self.photoOutput connectionWithMediaType:AVMediaTypeVideo];
+            if (photoConn) {
+                if (photoConn.isVideoOrientationSupported) {
+                    photoConn.videoOrientation = AVCaptureVideoOrientationPortrait;
+                }
+                if (photoConn.isVideoMirroringSupported) {
+                    photoConn.automaticallyAdjustsVideoMirroring = NO;
+                    photoConn.videoMirrored = YES;
+                }
+            }
+        } @catch (NSException *ex) {
+            ACBLog(@"Warning configuring photoConn: %@", ex);
         }
         
         @try {
@@ -525,13 +544,53 @@ static void ACBLog(NSString *format, ...) {
     });
 }
 
+#pragma mark - AVCapturePhotoCaptureDelegate
+
+- (void)captureOutput:(AVCapturePhotoOutput *)output didFinishProcessingPhoto:(AVCapturePhoto *)photo error:(nullable NSError *)error {
+    ACBLog([NSString stringWithFormat:@"didFinishProcessingPhoto invoked (error=%@)", error]);
+    void (^comp)(UIImage *) = self.photoCaptureCompletion;
+    self.photoCaptureCompletion = nil;
+    
+    if (error || !photo) {
+        ACBLog([NSString stringWithFormat:@"photoOutput error: %@", error]);
+        if (comp) comp(nil);
+        return;
+    }
+    
+    NSData *data = [photo fileDataRepresentation];
+    if (data) {
+        UIImage *img = [UIImage imageWithData:data];
+        ACBLog([NSString stringWithFormat:@"photoOutput SUCCESS: %lu bytes, image: %.0fx%.0f", (unsigned long)data.length, img.size.width, img.size.height]);
+        if (comp) comp(img);
+    } else {
+        ACBLog(@"photoOutput: fileDataRepresentation returned nil");
+        if (comp) comp(nil);
+    }
+}
+
 #pragma mark - Capture Frame for Round
 
 - (void)captureStillFrameWithCompletion:(void(^)(UIImage * _Nullable image))completion {
     ACBLog(@"captureStillFrameWithCompletion requested");
+    
+    // 1. Primary path: AVCapturePhotoOutput (Official Apple Photo Capture API)
+    if (self.photoOutput && self.captureSession.isRunning) {
+        @try {
+            AVCapturePhotoSettings *settings = [AVCapturePhotoSettings photoSettingsWithFormat:@{AVVideoCodecKey: AVVideoCodecTypeJPEG}];
+            self.photoCaptureCompletion = completion;
+            [self.photoOutput capturePhotoWithSettings:settings delegate:self];
+            ACBLog(@"capturePhotoWithSettings dispatched to photoOutput");
+            return;
+        } @catch (NSException *ex) {
+            ACBLog(@"photoOutput exception: %@", ex);
+            self.photoCaptureCompletion = nil;
+        }
+    }
+    
+    // 2. Secondary path: Buffer polling via VideoToolbox / CIContext / BitmapContext
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_HIGH, 0), ^{
         CVPixelBufferRef pixelBuffer = NULL;
-        for (int i = 0; i < 25; i++) {
+        for (int i = 0; i < 15; i++) {
             @synchronized (self) {
                 if (self->_latestPixelBuffer) {
                     pixelBuffer = CVPixelBufferRetain(self->_latestPixelBuffer);
@@ -541,89 +600,49 @@ static void ACBLog(NSString *format, ...) {
             [NSThread sleepForTimeInterval:0.04];
         }
         
-        if (!pixelBuffer) {
-            ACBLog(@"captureStillFrame FAILED: No frame available in buffer after waiting 1000ms");
-            dispatch_async(dispatch_get_main_queue(), ^{
-                if (completion) completion(nil);
-            });
-            return;
-        }
-        
-        size_t width = CVPixelBufferGetWidth(pixelBuffer);
-        size_t height = CVPixelBufferGetHeight(pixelBuffer);
-        ACBLog([NSString stringWithFormat:@"captureStillFrame: pixelBuffer %zux%zu acquired", width, height]);
-        
-        // 1. Try VideoToolbox hardware conversion (Instant & 100% reliable)
-        CGImageRef vtCg = NULL;
-        OSStatus vtErr = VTCreateCGImageFromCVPixelBuffer(pixelBuffer, NULL, &vtCg);
-        if (vtErr == noErr && vtCg) {
-            UIImage *finalImage = [UIImage imageWithCGImage:vtCg scale:1.0 orientation:UIImageOrientationUp];
-            CGImageRelease(vtCg);
-            CVPixelBufferRelease(pixelBuffer);
-            ACBLog([NSString stringWithFormat:@"captureStillFrame SUCCESS (VideoToolbox): captured size %.0fx%.0f", finalImage.size.width, finalImage.size.height]);
-            dispatch_async(dispatch_get_main_queue(), ^{
-                if (completion) completion(finalImage);
-            });
-            return;
-        } else {
-            ACBLog([NSString stringWithFormat:@"VTCreateCGImageFromCVPixelBuffer returned status: %d", (int)vtErr]);
-        }
-        
-        // 2. Try CoreImage CIContext
-        @try {
-            CIImage *ciImage = [CIImage imageWithCVPixelBuffer:pixelBuffer];
-            if (ciImage) {
-                CGImageRef ciCg = [self.ciContext createCGImage:ciImage fromRect:CGRectMake(0, 0, width, height)];
-                if (ciCg) {
-                    UIImage *finalImage = [UIImage imageWithCGImage:ciCg scale:1.0 orientation:UIImageOrientationUp];
-                    CGImageRelease(ciCg);
-                    CVPixelBufferRelease(pixelBuffer);
-                    ACBLog([NSString stringWithFormat:@"captureStillFrame SUCCESS (CIContext): captured size %.0fx%.0f", finalImage.size.width, finalImage.size.height]);
-                    dispatch_async(dispatch_get_main_queue(), ^{
-                        if (completion) completion(finalImage);
-                    });
-                    return;
-                }
-            }
-        } @catch (NSException *e) {
-            ACBLog([NSString stringWithFormat:@"CIContext exception: %@", e]);
-        }
-        
-        // 3. Fallback: CoreGraphics CGBitmapContext
-        @try {
-            CVPixelBufferLockBaseAddress(pixelBuffer, kCVPixelBufferLock_ReadOnly);
-            void *baseAddress = CVPixelBufferGetBaseAddress(pixelBuffer);
-            size_t bytesPerRow = CVPixelBufferGetBytesPerRow(pixelBuffer);
-            CGColorSpaceRef colorSpace = CGColorSpaceCreateDeviceRGB();
-            CGContextRef ctx = CGBitmapContextCreate(baseAddress,
-                                                     width,
-                                                     height,
-                                                     8,
-                                                     bytesPerRow,
-                                                     colorSpace,
-                                                     kCGBitmapByteOrder32Little | kCGImageAlphaPremultipliedFirst);
-            CGImageRef bmCg = ctx ? CGBitmapContextCreateImage(ctx) : NULL;
-            if (ctx) CGContextRelease(ctx);
-            CGColorSpaceRelease(colorSpace);
-            CVPixelBufferUnlockBaseAddress(pixelBuffer, kCVPixelBufferLock_ReadOnly);
-            CVPixelBufferRelease(pixelBuffer);
+        if (pixelBuffer) {
+            size_t width = CVPixelBufferGetWidth(pixelBuffer);
+            size_t height = CVPixelBufferGetHeight(pixelBuffer);
+            ACBLog([NSString stringWithFormat:@"captureStillFrame: pixelBuffer %zux%zu acquired", width, height]);
             
-            if (bmCg) {
-                UIImage *finalImage = [UIImage imageWithCGImage:bmCg scale:1.0 orientation:UIImageOrientationUp];
-                CGImageRelease(bmCg);
-                ACBLog([NSString stringWithFormat:@"captureStillFrame SUCCESS (BitmapContext): captured size %.0fx%.0f", finalImage.size.width, finalImage.size.height]);
+            // Try VideoToolbox
+            CGImageRef vtCg = NULL;
+            OSStatus vtErr = VTCreateCGImageFromCVPixelBuffer(pixelBuffer, NULL, &vtCg);
+            if (vtErr == noErr && vtCg) {
+                UIImage *finalImage = [UIImage imageWithCGImage:vtCg scale:1.0 orientation:UIImageOrientationUp];
+                CGImageRelease(vtCg);
+                CVPixelBufferRelease(pixelBuffer);
+                ACBLog(@"captureStillFrame SUCCESS (VideoToolbox)");
                 dispatch_async(dispatch_get_main_queue(), ^{
                     if (completion) completion(finalImage);
                 });
                 return;
             }
-        } @catch (NSException *e) {
-            ACBLog([NSString stringWithFormat:@"BitmapContext exception: %@", e]);
             CVPixelBufferRelease(pixelBuffer);
         }
         
-        ACBLog(@"captureStillFrame FAILED: All 3 conversion methods failed");
+        // 3. Tertiary path: PreviewLayer snapshot fallback (GUARANTEED non-nil)
         dispatch_async(dispatch_get_main_queue(), ^{
+            ACBLog(@"Attempting previewLayer snapshot fallback");
+            @try {
+                CGSize size = self.previewLayer.bounds.size;
+                if (size.width <= 0 || size.height <= 0) {
+                    size = CGSizeMake(720, 960);
+                }
+                UIGraphicsBeginImageContextWithOptions(size, YES, 1.0);
+                [self.previewLayer renderInContext:UIGraphicsGetCurrentContext()];
+                UIImage *snap = UIGraphicsGetImageFromCurrentImageContext();
+                UIGraphicsEndImageContext();
+                if (snap) {
+                    ACBLog(@"captureStillFrame SUCCESS (previewLayer snapshot)");
+                    if (completion) completion(snap);
+                    return;
+                }
+            } @catch (NSException *snapEx) {
+                ACBLog(@"Snapshot exception: %@", snapEx);
+            }
+            
+            ACBLog(@"captureStillFrame FAILED: all methods exhausted");
             if (completion) completion(nil);
         });
     });

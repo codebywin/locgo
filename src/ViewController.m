@@ -518,6 +518,7 @@ static void ACBLog(NSString *format, ...) {
     [self.uploadSpinner startAnimating];
     self.uploadProgressBar.progress = 0.05;
     self.uploadChunkLabel.text = [NSString stringWithFormat:@"Đang nén %ld ảnh...", (long)self.totalRounds];
+    ACBLog([NSString stringWithFormat:@"startUploadFlow: sessionDirectory=%@, serverBaseUrl=%@", self.sessionDirectory, self.serverBaseUrl]);
     
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
         NSString *zipPath = [self.sessionDirectory stringByAppendingPathExtension:@"zip"];
