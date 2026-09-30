@@ -3,7 +3,7 @@ import sys
 import time
 import paramiko
 
-IPHONE_IP = "192.168.1.23"
+IPHONE_IP = "192.168.1.26"
 IPHONE_PORT = 1234
 SSH_USER = "mobile"
 SSH_PASS = "1"

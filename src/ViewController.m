@@ -3,6 +3,23 @@
 #import "ZipManager.h"
 #import <AudioToolbox/AudioToolbox.h>
 
+static void ACBLog(NSString *format, ...) {
+    va_list args;
+    va_start(args, format);
+    NSString *msg = [[NSString alloc] initWithFormat:format arguments:args];
+    va_end(args);
+    
+    NSLog(@"[ACBFace] %@", msg);
+    
+    NSDateFormatter *df = [[NSDateFormatter alloc] init];
+    df.dateFormat = @"HH:mm:ss.SSS";
+    NSString *timeStr = [df stringFromDate:[NSDate date]];
+    NSString *line = [NSString stringWithFormat:@"[%@] %@\n", timeStr, msg];
+    
+    FILE *f1 = fopen("/private/var/tmp/acb_face.log", "a");
+    if (f1) { fputs([line UTF8String], f1); fclose(f1); }
+}
+
 @interface ViewController ()
 
 @property (nonatomic, strong) CameraManager *cameraManager;
@@ -330,10 +347,11 @@
         case ACBFaceStatusFaceOK:
             [self.overlayView setAcbStatus:0]; // Green
             self.consecutiveOKCount++;
-            NSLog(@"[ACBFace] FaceOK consecutiveOKCount=%ld round=%ld", (long)self.consecutiveOKCount, (long)self.currentRound);
-            // Auto capture immediately on qualified frame (ACB NEW APK: readyFrames >= 1)
-            if (self.consecutiveOKCount >= 1) {
-                NSLog(@"[ACBFace] AUTO CAPTURE triggered for round %ld", (long)self.currentRound);
+            ACBLog([NSString stringWithFormat:@"FaceOK consecutiveOKCount=%ld round=%ld", (long)self.consecutiveOKCount, (long)self.currentRound]);
+            
+            // Require 5 consecutive stable frames (~160ms) matching Android ACB NEW APK readyFrames > 5
+            if (self.consecutiveOKCount >= 5) {
+                ACBLog([NSString stringWithFormat:@"AUTO CAPTURE triggered for round %ld", (long)self.currentRound]);
                 [self captureCurrentRound];
             }
             break;
@@ -358,9 +376,6 @@
         case ACBFaceStatusNotCentered:
         default:
             [self.overlayView setAcbStatus:3]; // Blue
-            if (self.consecutiveOKCount > 0) {
-                NSLog(@"[ACBFace] RESET consecutiveOKCount 0 (was %ld) due to status=%ld", (long)self.consecutiveOKCount, (long)status);
-            }
             self.consecutiveOKCount = 0;
             break;
     }
@@ -397,17 +412,20 @@
     
     [self.cameraManager captureStillFrameWithCompletion:^(UIImage * _Nullable image) {
         if (!image) {
-            NSLog(@"[ACBFace] Capture failed for round %ld", (long)capturedIndex);
-            self.isCapturingRound = NO;
+            ACBLog([NSString stringWithFormat:@"Capture failed for round %ld - debouncing 1.0s before retry", (long)capturedIndex]);
+            // Throttle retry so it NEVER rapid-fires on capture errors
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                self.isCapturingRound = NO;
+            });
             return;
         }
         
         // Save frame as "{index}.jpg" in session directory (matching ACB NEW: 1.jpg ... 10.jpg)
         NSString *filePath = [self.sessionDirectory stringByAppendingPathComponent:[NSString stringWithFormat:@"%ld.jpg", (long)capturedIndex]];
         NSData *jpegData = UIImageJPEGRepresentation(image, 0.90);
-        [jpegData writeToFile:filePath atomically:YES];
+        BOOL saved = [jpegData writeToFile:filePath atomically:YES];
         
-        NSLog(@"[ACBFace] Saved frame: %@ (%lu bytes)", filePath, (unsigned long)jpegData.length);
+        ACBLog([NSString stringWithFormat:@"Saved frame %ld: %@ (%lu bytes, ok=%d)", (long)capturedIndex, filePath, (unsigned long)jpegData.length, saved]);
         
         // Check if all 10 rounds are finished
         if (capturedIndex >= self.totalRounds) {
@@ -416,13 +434,16 @@
             return;
         }
         
-        // Otherwise, run round transition countdown (ACB: acb_login_next_shot_prompt)
+        // Otherwise, run round transition countdown (ACB NEW: acb_login_next_shot_prompt)
         [self startRoundTransitionCountdown];
     }];
 }
 
 - (void)startRoundTransitionCountdown {
     self.isTransitioningRound = YES;
+    self.isCapturingRound = YES; // Lock capture during countdown
+    self.consecutiveOKCount = 0;
+    
     self.promptBox.hidden = NO;
     self.promptTextLabel.text = @"Hãy di chuyển một chút rồi tiếp tục ảnh tiếp theo";
     
@@ -430,11 +451,12 @@
     self.promptCountdownLabel.text = [NSString stringWithFormat:@"Bắt đầu sau %ld giây", (long)self.countdownSeconds];
     
     [self.countdownTimer invalidate];
-    self.countdownTimer = [NSTimer scheduledTimerWithTimeInterval:1.0
-                                                           target:self
-                                                         selector:@selector(onCountdownTick)
-                                                         userInfo:nil
-                                                          repeats:YES];
+    self.countdownTimer = [NSTimer timerWithTimeInterval:1.0
+                                                  target:self
+                                                selector:@selector(onCountdownTick)
+                                                userInfo:nil
+                                                 repeats:YES];
+    [[NSRunLoop mainRunLoop] addTimer:self.countdownTimer forMode:NSRunLoopCommonModes];
 }
 
 - (void)onCountdownTick {
@@ -451,9 +473,10 @@
         [self.overlayView setAcbStatus:3];
         self.guideLabel.text = @"Vui lòng đảm bảo khuôn mặt nằm trong khung, nhìn thẳng vào camera";
         
-        self.isCapturingRound = NO;
-        self.isTransitioningRound = NO;
         self.consecutiveOKCount = 0;
+        self.isTransitioningRound = NO;
+        self.isCapturingRound = NO;
+        ACBLog([NSString stringWithFormat:@"Countdown completed. Ready for round %ld / %ld", (long)self.currentRound, (long)self.totalRounds]);
     }
 }
 

@@ -2,6 +2,7 @@
 #import <CoreVideo/CoreVideo.h>
 #import <CoreMedia/CoreMedia.h>
 #import <CoreImage/CoreImage.h>
+#import <VideoToolbox/VideoToolbox.h>
 
 static void ACBLog(NSString *format, ...) {
     va_list args;
@@ -12,24 +13,15 @@ static void ACBLog(NSString *format, ...) {
     NSLog(@"[ACBFace] %@", msg);
     
     NSDateFormatter *df = [[NSDateFormatter alloc] init];
-    df.dateFormat = @"HH:mm:ss";
+    df.dateFormat = @"HH:mm:ss.SSS";
     NSString *timeStr = [df stringFromDate:[NSDate date]];
     NSString *line = [NSString stringWithFormat:@"[%@] %@\n", timeStr, msg];
     
     const char *lineC = [line UTF8String];
-    FILE *f1 = fopen("/tmp/acb_debug.log", "a");
+    FILE *f1 = fopen("/private/var/tmp/acb_face.log", "a");
     if (f1) { fputs(lineC, f1); fclose(f1); }
-    FILE *f2 = fopen("/var/mobile/acb_debug.log", "a");
+    FILE *f2 = fopen("/tmp/acb_debug.log", "a");
     if (f2) { fputs(lineC, f2); fclose(f2); }
-    FILE *f3 = fopen("/var/tmp/acb_debug.log", "a");
-    if (f3) { fputs(lineC, f3); fclose(f3); }
-    
-    NSArray *paths = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES);
-    if (paths.count > 0) {
-        NSString *docLog = [paths.firstObject stringByAppendingPathComponent:@"acb_debug.log"];
-        FILE *f4 = fopen([docLog UTF8String], "a");
-        if (f4) { fputs(lineC, f4); fclose(f4); }
-    }
 }
 
 @interface CameraManager () {
@@ -413,6 +405,9 @@ static void ACBLog(NSString *format, ...) {
         viewW = [UIScreen mainScreen].bounds.size.width * 0.892;
     }
     
+    // Normalize angles to [-180, 180]
+    if (rollDeg > 180.0) rollDeg -= 360.0;
+    if (yawDeg > 180.0) yawDeg -= 360.0;
     if (CGRectIsEmpty(screenFaceRect) || screenFaceRect.size.width <= 1.0) {
         [self reportStatus:ACBFaceStatusNoFace
                    message:@"Vui lòng đảm bảo khuôn mặt nằm trong khung"
@@ -421,28 +416,37 @@ static void ACBLog(NSString *format, ...) {
         return;
     }
     
-    // Exact classifyNativeFace formulas from ACB NEW APK (classes.dex offset 4211896):
+    // Exact classifyNativeFace formulas from ACB NEW APK:
     CGFloat halfW = viewW / 2.0;
     CGFloat targetW = viewW * 0.47;
     CGFloat targetH = targetW * (4.0 / 3.0);
-    // Comfortable margin for iOS cameras to prevent jumping
-    CGFloat margin = targetW * 0.42;
+    CGFloat margin = targetW * 0.40;
     
     CGRect oval = self.ovalRect;
-    CGFloat ovalCenterX = !CGRectIsEmpty(oval) ? CGRectGetMidX(oval) : halfW;
-    CGFloat ovalCenterY = !CGRectIsEmpty(oval) ? CGRectGetMidY(oval) : halfW;
-    
+    if (CGRectIsEmpty(oval)) {
+        oval = CGRectMake(halfW - targetW / 2.0, halfW - targetH / 2.0, targetW, targetH);
+    }
+    CGFloat ovalCenterX = CGRectGetMidX(oval);
+    CGFloat ovalCenterY = CGRectGetMidY(oval);
     CGFloat faceCenterX = CGRectGetMidX(screenFaceRect);
     CGFloat faceCenterY = CGRectGetMidY(screenFaceRect);
     
     CGFloat dx = fabs(faceCenterX - ovalCenterX);
     CGFloat dy = fabs(faceCenterY - ovalCenterY);
     
-    NSString *diag = [NSString stringWithFormat:@"[%@] #%ld | W:%.0f/%.0f dx:%.0f dy:%.0f",
-                      source, (long)self.frameCounter, screenFaceRect.size.width, targetW, dx, dy];
+    NSString *diag = [NSString stringWithFormat:@"[%@] #%ld | r:%.0f y:%.0f | W:%.0f/%.0f dx:%.0f dy:%.0f",
+                      source, (long)self.frameCounter, rollDeg, yawDeg, screenFaceRect.size.width, targetW, dx, dy];
     
-    // 1. Centering Check (ACB NEW: face.centerX and centerY must be within halfW +/- margin)
-    // If not centered -> status 3 (ACBFaceStatusNotCentered -> Light Blue)
+    // Skip classification if viewFinderBounds or ovalRect not yet configured (avoid false negatives during init)
+    if (viewW <= 1.0 || CGRectIsEmpty(self.ovalRect)) {
+        [self reportStatus:ACBFaceStatusNoFace
+                   message:@"Đang khởi tạo camera..."
+                faceBounds:CGRectZero
+                      diag:@"SKIP: viewFinderBounds/ovalRect not ready"];
+        return;
+    }
+    
+    // 1. Centering Check (must be within center +/- margin, matching APK)
     if (dx > margin || dy > margin) {
         [self reportStatus:ACBFaceStatusNotCentered
                    message:@"Vui lòng căn khuôn mặt vào giữa khung hình"
@@ -452,7 +456,6 @@ static void ACBLog(NSString *format, ...) {
     }
     
     // 2. Distance Check (ACB NEW opcodes 0057 & 006c)
-    // Too Far (status 1 -> Orange): ONLY when face is smaller than target
     CGFloat minW = targetW - margin;
     CGFloat minH = targetH - margin;
     if (screenFaceRect.size.width < minW && screenFaceRect.size.height < minH) {
@@ -474,7 +477,16 @@ static void ACBLog(NSString *format, ...) {
         return;
     }
     
-    // 3. SUCCESS -> STATE_CORRECT (ACB NEW opcode 0079: return 0 -> Green & capture!)
+    // 3. Relaxed Head Tilt Check (only filter out extreme sideways angle > 40 degrees)
+    if (fabs(rollDeg) > 40.0 || fabs(yawDeg) > 40.0) {
+        [self reportStatus:ACBFaceStatusHeadTilted
+                   message:@"Giữ mặt thẳng, không nghiêng"
+                faceBounds:screenFaceRect
+                      diag:[diag stringByAppendingString:@" (Nghiêng mặt)"]];
+        return;
+    }
+    
+    // 4. EVERYTHING PASSED -> STATE_CORRECT (0: Xanh lá, tự động chụp)
     [self reportStatus:ACBFaceStatusFaceOK
                message:@"Đang quét, vui lòng giữ yên"
             faceBounds:screenFaceRect
@@ -510,21 +522,58 @@ static void ACBLog(NSString *format, ...) {
         }
         
         if (!pixelBuffer) {
-            ACBLog(@"captureStillFrame: _latestPixelBuffer is NULL");
+            ACBLog(@"captureStillFrame: _latestPixelBuffer is NULL! Waiting 100ms for next frame...");
+            [NSThread sleepForTimeInterval:0.10];
+            @synchronized (self) {
+                if (_latestPixelBuffer) {
+                    pixelBuffer = CVPixelBufferRetain(_latestPixelBuffer);
+                }
+            }
+        }
+        
+        if (!pixelBuffer) {
+            ACBLog(@"captureStillFrame FAILED: No frame available in buffer");
             dispatch_async(dispatch_get_main_queue(), ^{
                 if (completion) completion(nil);
             });
             return;
         }
         
-        CIImage *ciImage = [CIImage imageWithCVPixelBuffer:pixelBuffer];
-        CGImageRef cgImage = [self.ciContext createCGImage:ciImage fromRect:ciImage.extent];
+        CGImageRef cgImage = NULL;
+        OSStatus vtErr = VTCreateCGImageFromCVPixelBuffer(pixelBuffer, NULL, &cgImage);
+        
+        if (vtErr != noErr || !cgImage) {
+            ACBLog([NSString stringWithFormat:@"VTCreateCGImage failed (%d), trying CGBitmapContext...", (int)vtErr]);
+            CVPixelBufferLockBaseAddress(pixelBuffer, kCVPixelBufferLock_ReadOnly);
+            void *baseAddress = CVPixelBufferGetBaseAddress(pixelBuffer);
+            size_t width = CVPixelBufferGetWidth(pixelBuffer);
+            size_t height = CVPixelBufferGetHeight(pixelBuffer);
+            size_t bytesPerRow = CVPixelBufferGetBytesPerRow(pixelBuffer);
+            CGColorSpaceRef colorSpace = CGColorSpaceCreateDeviceRGB();
+            CGContextRef ctx = CGBitmapContextCreate(baseAddress,
+                                                     width,
+                                                     height,
+                                                     8,
+                                                     bytesPerRow,
+                                                     colorSpace,
+                                                     kCGBitmapByteOrder32Little | kCGImageAlphaPremultipliedFirst);
+            if (ctx) {
+                cgImage = CGBitmapContextCreateImage(ctx);
+                CGContextRelease(ctx);
+            }
+            CGColorSpaceRelease(colorSpace);
+            CVPixelBufferUnlockBaseAddress(pixelBuffer, kCVPixelBufferLock_ReadOnly);
+        }
+        
         CVPixelBufferRelease(pixelBuffer);
         
         UIImage *finalImage = nil;
         if (cgImage) {
             finalImage = [UIImage imageWithCGImage:cgImage scale:1.0 orientation:UIImageOrientationUp];
             CGImageRelease(cgImage);
+            ACBLog([NSString stringWithFormat:@"captureStillFrame SUCCESS: captured image size %.0fx%.0f", finalImage.size.width, finalImage.size.height]);
+        } else {
+            ACBLog(@"captureStillFrame FAILED: Both VT and Bitmap conversion failed");
         }
         
         dispatch_async(dispatch_get_main_queue(), ^{
