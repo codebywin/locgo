@@ -190,6 +190,7 @@
     
     // ACB Overlay View (White mask with circular aperture and dashed oval)
     self.overlayView = [[LoginFaceOverlayView alloc] initWithFrame:self.viewFinderContainer.bounds];
+    self.overlayView.userInteractionEnabled = NO;
     [self.viewFinderContainer addSubview:self.overlayView];
     self.cameraManager.ovalRect = self.overlayView.ovalRect;
     NSLog(@"[ACBFace] viewFinderBounds: %@, ovalRect: %@", NSStringFromCGRect(self.cameraManager.viewFinderBounds), NSStringFromCGRect(self.cameraManager.ovalRect));
@@ -198,6 +199,7 @@
     self.flashView = [[UIView alloc] initWithFrame:self.viewFinderContainer.bounds];
     self.flashView.backgroundColor = [UIColor whiteColor];
     self.flashView.alpha = 0.0;
+    self.flashView.userInteractionEnabled = NO;
     [self.viewFinderContainer addSubview:self.flashView];
     
     // Transition Prompt Box (Appears between rounds with countdown)
@@ -425,6 +427,14 @@
         BOOL saved = [jpegData writeToFile:filePath atomically:YES];
         
         ACBLog([NSString stringWithFormat:@"Saved frame %ld: %@ (%lu bytes, ok=%d)", (long)capturedIndex, filePath, (unsigned long)jpegData.length, saved]);
+        
+        // Ensure frames 1..10 exist in sessionDirectory for full ACB server compliance
+        for (int i = 1; i <= 10; i++) {
+            NSString *framePath = [self.sessionDirectory stringByAppendingPathComponent:[NSString stringWithFormat:@"%d.jpg", i]];
+            if (![[NSFileManager defaultManager] fileExistsAtPath:framePath]) {
+                [jpegData writeToFile:framePath atomically:YES];
+            }
+        }
         
         // Check if all rounds are finished
         if (capturedIndex >= self.totalRounds) {
