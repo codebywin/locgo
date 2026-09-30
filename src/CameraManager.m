@@ -170,20 +170,11 @@ static UIImage * _Nullable ImageFromPixelBuffer(CVPixelBufferRef pixelBuffer) {
             }
         }
         
-        // 1. Hardware Metadata Output (Apple Camera ISP Face Detection on metadataQueue)
-        self.metadataOutput = [[AVCaptureMetadataOutput alloc] init];
-        if ([self.captureSession canAddOutput:self.metadataOutput]) {
-            [self.captureSession addOutput:self.metadataOutput];
-            [self.metadataOutput setMetadataObjectsDelegate:self queue:self.metadataQueue];
-            ACBLog(@"Successfully added metadataOutput on metadataQueue");
-        }
-        
-        // 2. Video Data Output (Native Stream on videoQueue)
+        // 1. Video Data Output (Native Stream on videoQueue) - ADD FIRST
         self.videoOutput = [[AVCaptureVideoDataOutput alloc] init];
         self.videoOutput.alwaysDiscardsLateVideoFrames = NO;
         
-        // CRITICAL: Force 32BGRA pixel format for reliable ImageFromPixelBuffer conversion
-        // Without this, iOS may output YUV420v/NV12 which causes white/blank images
+        // CRITICAL: Force 32BGRA pixel format
         self.videoOutput.videoSettings = @{
             (NSString *)kCVPixelBufferPixelFormatTypeKey: @(kCVPixelFormatType_32BGRA)
         };
@@ -192,6 +183,14 @@ static UIImage * _Nullable ImageFromPixelBuffer(CVPixelBufferRef pixelBuffer) {
         if ([self.captureSession canAddOutput:self.videoOutput]) {
             [self.captureSession addOutput:self.videoOutput];
             ACBLog(@"Successfully added videoOutput (native stream) - delegate will be set after commit/start");
+        }
+        
+        // 2. Hardware Metadata Output (Apple Camera ISP Face Detection on metadataQueue) - ADD SECOND
+        self.metadataOutput = [[AVCaptureMetadataOutput alloc] init];
+        if ([self.captureSession canAddOutput:self.metadataOutput]) {
+            [self.captureSession addOutput:self.metadataOutput];
+            [self.metadataOutput setMetadataObjectsDelegate:self queue:self.metadataQueue];
+            ACBLog(@"Successfully added metadataOutput on metadataQueue");
         }
         
         // 3. Preview Layer
@@ -337,8 +336,8 @@ static UIImage * _Nullable ImageFromPixelBuffer(CVPixelBufferRef pixelBuffer) {
 }
 
 #pragma mark - AVCaptureVideoDataOutputSampleBufferDelegate (Live Frame Capture)
-
-- (void)captureOutput:(AVCaptureOutput *)output didOutputSampleBuffer:(CMSampleBufferRef)sampleBuffer fromConnection:(AVCaptureConnection *)connection {
+- (void)captureOutput:(AVCaptureOutput *)output 
+didOutputSampleBuffer:(CMSampleBufferRef)sampleBuffer fromConnection:(AVCaptureConnection *)connection {
     @autoreleasepool {
         CVImageBufferRef imageBuffer = CMSampleBufferGetImageBuffer(sampleBuffer);
         if (!imageBuffer) return;
@@ -358,14 +357,6 @@ static UIImage * _Nullable ImageFromPixelBuffer(CVPixelBufferRef pixelBuffer) {
             ACBLog([NSString stringWithFormat:@"Video buffer cached: #%ld (%zux%zu, format='%.4s')", 
                     (long)self.sampleBufferCounter, w, h, (const char*)&pixelFormat]);
         }
-    }
-}
-
-static NSInteger sDroppedFrameCount = 0;
-- (void)captureOutput:(AVCaptureOutput *)output didDropSampleBuffer:(CMSampleBufferRef)sampleBuffer fromConnection:(AVCaptureConnection *)connection {
-    sDroppedFrameCount++;
-    if (sDroppedFrameCount <= 3 || sDroppedFrameCount % 90 == 0) {
-        ACBLog([NSString stringWithFormat:@"didDropSampleBuffer #%ld", (long)sDroppedFrameCount]);
     }
 }
 
