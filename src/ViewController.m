@@ -187,7 +187,7 @@
     self.overlayView = [[LoginFaceOverlayView alloc] initWithFrame:self.viewFinderContainer.bounds];
     [self.viewFinderContainer addSubview:self.overlayView];
     self.cameraManager.ovalRect = self.overlayView.ovalRect;
-    ACBLog(@"viewFinderBounds: %@, ovalRect: %@", NSStringFromCGRect(self.cameraManager.viewFinderBounds), NSStringFromCGRect(self.cameraManager.ovalRect));
+    NSLog(@"[ACBFace] viewFinderBounds: %@, ovalRect: %@", NSStringFromCGRect(self.cameraManager.viewFinderBounds), NSStringFromCGRect(self.cameraManager.ovalRect));
     
     // Flash View for Shutter Effect
     self.flashView = [[UIView alloc] initWithFrame:self.viewFinderContainer.bounds];
