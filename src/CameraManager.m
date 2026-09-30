@@ -62,7 +62,6 @@ static void ACBLog(NSString *format, ...) {
     if (self) {
         ACBLog(@"CameraManager init started");
         _captureQueue = dispatch_queue_create("com.acbface.videoQueue", DISPATCH_QUEUE_SERIAL);
-        _ciContext = [CIContext contextWithOptions:nil];
         _lastMetadataTime = 0;
         _lastVisionTime = 0;
         _frameCounter = 0;
@@ -84,7 +83,12 @@ static void ACBLog(NSString *format, ...) {
 
 - (CIContext *)ciContext {
     if (!_ciContext) {
-        _ciContext = [CIContext contextWithOptions:nil];
+        @try {
+            _ciContext = [CIContext contextWithOptions:@{kCIContextUseSoftwareRenderer: @YES}];
+        } @catch (NSException *e) {
+            ACBLog(@"Failed to create CIContext: %@", e);
+            _ciContext = nil;
+        }
     }
     return _ciContext;
 }
@@ -134,16 +138,17 @@ static void ACBLog(NSString *format, ...) {
         // 2. Video Data Output (Frame Buffer Delivery & Vision Fallback)
         self.videoOutput = [[AVCaptureVideoDataOutput alloc] init];
         self.videoOutput.alwaysDiscardsLateVideoFrames = YES;
-        NSArray *formats = [self.videoOutput availableVideoCVPixelFormatTypes];
-        if ([formats containsObject:@(kCVPixelFormatType_32BGRA)]) {
-            self.videoOutput.videoSettings = @{(id)kCVPixelBufferPixelFormatTypeKey: @(kCVPixelFormatType_32BGRA)};
-        } else if ([formats containsObject:@(kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange)]) {
-            self.videoOutput.videoSettings = @{(id)kCVPixelBufferPixelFormatTypeKey: @(kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange)};
+        @try {
+            self.videoOutput.videoSettings = @{
+                (id)kCVPixelBufferPixelFormatTypeKey: @(kCVPixelFormatType_32BGRA)
+            };
+        } @catch (NSException *ex) {
+            ACBLog(@"Warning setting videoSettings: %@", ex);
         }
         [self.videoOutput setSampleBufferDelegate:self queue:self.captureQueue];
         if ([self.captureSession canAddOutput:self.videoOutput]) {
             [self.captureSession addOutput:self.videoOutput];
-            ACBLog(@"Successfully added videoOutput");
+            ACBLog(@"Successfully added videoOutput (32BGRA)");
         } else {
             ACBLog(@"Failed to add videoOutput");
         }
