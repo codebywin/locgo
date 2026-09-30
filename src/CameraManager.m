@@ -476,14 +476,6 @@ static void ACBLog(NSString *format, ...) {
         return;
     }
     
-    // 3. Relaxed Head Tilt Check (only filter out extreme sideways angle > 40 degrees)
-    if (fabs(rollDeg) > 40.0 || fabs(yawDeg) > 40.0) {
-        [self reportStatus:ACBFaceStatusHeadTilted
-                   message:@"Giữ mặt thẳng, không nghiêng"
-                faceBounds:screenFaceRect
-                      diag:[diag stringByAppendingString:@" (Nghiêng mặt)"]];
-        return;
-    }
     
     // 4. EVERYTHING PASSED -> STATE_CORRECT (0: Xanh lá, tự động chụp)
     [self reportStatus:ACBFaceStatusFaceOK
