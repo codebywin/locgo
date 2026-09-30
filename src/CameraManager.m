@@ -413,36 +413,36 @@ static void ACBLog(NSString *format, ...) {
         viewW = [UIScreen mainScreen].bounds.size.width * 0.892;
     }
     
-    // Normalize angles to [-180, 180]
-    if (rollDeg > 180.0) rollDeg -= 360.0;
-    if (yawDeg > 180.0) yawDeg -= 360.0;
-    
-    // Exact classifyNativeFace formulas from ACB NEW APK:
-    // targetWidth = viewW * 0.47f
-    // targetHeight = targetWidth * 1.3333334f (4/3)
-    // margin = targetWidth * 0.40f (comfortable margin to prevent flickering)
-    CGFloat targetW = viewW * 0.47;
-    CGFloat targetH = targetW * (4.0 / 3.0);
-    CGFloat margin = targetW * 0.40;
-    
-    CGRect oval = self.ovalRect;
-    if (CGRectIsEmpty(oval)) {
-        CGFloat halfW = viewW / 2.0;
-        oval = CGRectMake(halfW - targetW / 2.0, halfW - targetH / 2.0, targetW, targetH);
+    if (CGRectIsEmpty(screenFaceRect) || screenFaceRect.size.width <= 1.0) {
+        [self reportStatus:ACBFaceStatusNoFace
+                   message:@"Vui lòng đảm bảo khuôn mặt nằm trong khung"
+                faceBounds:CGRectZero
+                      diag:[NSString stringWithFormat:@"[%@] 0 face", source]];
+        return;
     }
     
-    CGFloat ovalCenterX = CGRectGetMidX(oval);
-    CGFloat ovalCenterY = CGRectGetMidY(oval);
+    // Exact classifyNativeFace formulas from ACB NEW APK (classes.dex offset 4211896):
+    CGFloat halfW = viewW / 2.0;
+    CGFloat targetW = viewW * 0.47;
+    CGFloat targetH = targetW * (4.0 / 3.0);
+    // Comfortable margin for iOS cameras to prevent jumping
+    CGFloat margin = targetW * 0.42;
+    
+    CGRect oval = self.ovalRect;
+    CGFloat ovalCenterX = !CGRectIsEmpty(oval) ? CGRectGetMidX(oval) : halfW;
+    CGFloat ovalCenterY = !CGRectIsEmpty(oval) ? CGRectGetMidY(oval) : halfW;
+    
     CGFloat faceCenterX = CGRectGetMidX(screenFaceRect);
     CGFloat faceCenterY = CGRectGetMidY(screenFaceRect);
     
     CGFloat dx = fabs(faceCenterX - ovalCenterX);
     CGFloat dy = fabs(faceCenterY - ovalCenterY);
     
-    NSString *diag = [NSString stringWithFormat:@"[%@] #%ld | r:%.0f y:%.0f | W:%.0f/%.0f dx:%.0f dy:%.0f",
-                      source, (long)self.frameCounter, rollDeg, yawDeg, screenFaceRect.size.width, targetW, dx, dy];
+    NSString *diag = [NSString stringWithFormat:@"[%@] #%ld | W:%.0f/%.0f dx:%.0f dy:%.0f",
+                      source, (long)self.frameCounter, screenFaceRect.size.width, targetW, dx, dy];
     
-    // 1. Centering Check (must be within center +/- margin, matching APK)
+    // 1. Centering Check (ACB NEW: face.centerX and centerY must be within halfW +/- margin)
+    // If not centered -> status 3 (ACBFaceStatusNotCentered -> Light Blue)
     if (dx > margin || dy > margin) {
         [self reportStatus:ACBFaceStatusNotCentered
                    message:@"Vui lòng căn khuôn mặt vào giữa khung hình"
@@ -451,17 +451,22 @@ static void ACBLog(NSString *format, ...) {
         return;
     }
     
-    // 2. Distance Check (matching APK classifyNativeFace opcodes 0057 & 006c)
-    // if width < targetW - margin && height < targetH - margin -> return 1 (Too Far)
-    // if width > targetW + margin && height > targetH + margin -> return 2 (Too Close)
-    if (screenFaceRect.size.width < (targetW - margin) && screenFaceRect.size.height < (targetH - margin)) {
+    // 2. Distance Check (ACB NEW opcodes 0057 & 006c)
+    // Too Far (status 1 -> Orange): ONLY when face is smaller than target
+    CGFloat minW = targetW - margin;
+    CGFloat minH = targetH - margin;
+    if (screenFaceRect.size.width < minW && screenFaceRect.size.height < minH) {
         [self reportStatus:ACBFaceStatusTooFar
                    message:@"Di chuyển lại gần camera"
                 faceBounds:screenFaceRect
                       diag:[diag stringByAppendingString:@" (Quá xa)"]];
         return;
     }
-    if (screenFaceRect.size.width > (targetW + margin * 1.3) && screenFaceRect.size.height > (targetH + margin * 1.3)) {
+    
+    // Too Close (status 2 -> Orange): ONLY when face is larger than target + margin
+    CGFloat maxW = targetW + margin * 1.35;
+    CGFloat maxH = targetH + margin * 1.35;
+    if (screenFaceRect.size.width > maxW && screenFaceRect.size.height > maxH) {
         [self reportStatus:ACBFaceStatusTooClose
                    message:@"Di chuyển ra xa camera"
                 faceBounds:screenFaceRect
@@ -469,16 +474,7 @@ static void ACBLog(NSString *format, ...) {
         return;
     }
     
-    // 3. Relaxed Head Tilt Check (only filter out extreme sideways angle > 40 degrees)
-    if (fabs(rollDeg) > 40.0 || fabs(yawDeg) > 40.0) {
-        [self reportStatus:ACBFaceStatusHeadTilted
-                   message:@"Giữ mặt thẳng, không nghiêng"
-                faceBounds:screenFaceRect
-                      diag:[diag stringByAppendingString:@" (Nghiêng mặt)"]];
-        return;
-    }
-    
-    // 4. EVERYTHING PASSED -> STATE_CORRECT (0: Xanh lá, tự động chụp)
+    // 3. SUCCESS -> STATE_CORRECT (ACB NEW opcode 0079: return 0 -> Green & capture!)
     [self reportStatus:ACBFaceStatusFaceOK
                message:@"Đang quét, vui lòng giữ yên"
             faceBounds:screenFaceRect
