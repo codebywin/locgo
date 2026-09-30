@@ -187,6 +187,7 @@
     self.overlayView = [[LoginFaceOverlayView alloc] initWithFrame:self.viewFinderContainer.bounds];
     [self.viewFinderContainer addSubview:self.overlayView];
     self.cameraManager.ovalRect = self.overlayView.ovalRect;
+    ACBLog(@"viewFinderBounds: %@, ovalRect: %@", NSStringFromCGRect(self.cameraManager.viewFinderBounds), NSStringFromCGRect(self.cameraManager.ovalRect));
     
     // Flash View for Shutter Effect
     self.flashView = [[UIView alloc] initWithFrame:self.viewFinderContainer.bounds];
@@ -329,8 +330,10 @@
         case ACBFaceStatusFaceOK:
             [self.overlayView setAcbStatus:0]; // Green
             self.consecutiveOKCount++;
-            // Auto capture when face remains qualified for 2 consecutive frames (~0.2s)
-            if (self.consecutiveOKCount >= 2) {
+            NSLog(@"[ACBFace] FaceOK consecutiveOKCount=%ld round=%ld", (long)self.consecutiveOKCount, (long)self.currentRound);
+            // Auto capture immediately on qualified frame (ACB NEW APK: readyFrames >= 1)
+            if (self.consecutiveOKCount >= 1) {
+                NSLog(@"[ACBFace] AUTO CAPTURE triggered for round %ld", (long)self.currentRound);
                 [self captureCurrentRound];
             }
             break;
@@ -355,6 +358,9 @@
         case ACBFaceStatusNotCentered:
         default:
             [self.overlayView setAcbStatus:3]; // Blue
+            if (self.consecutiveOKCount > 0) {
+                NSLog(@"[ACBFace] RESET consecutiveOKCount 0 (was %ld) due to status=%ld", (long)self.consecutiveOKCount, (long)status);
+            }
             self.consecutiveOKCount = 0;
             break;
     }

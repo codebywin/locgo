@@ -13,6 +13,7 @@
 @property (nonatomic, strong) CAGradientLayer *buttonGradient;
 @property (nonatomic, strong) UISwitch *localServerSwitch;
 @property (nonatomic, strong) UILabel *localServerLabel;
+@property (nonatomic, strong) UITextField *serverTextField;
 @end
 
 @implementation CardInputViewController
@@ -43,22 +44,24 @@
         if (win && win.safeAreaInsets.top > 0) safeTop = win.safeAreaInsets.top;
     }
     
-    CGFloat startY = safeTop + 60.0;
+    CGFloat startY = safeTop + 50.0;
     
     self.brandLabel.frame = CGRectMake(padX, startY, contentW, 36);
     self.brandSubtitleLabel.frame = CGRectMake(padX, CGRectGetMaxY(self.brandLabel.frame) + 6, contentW, 20);
     
-    self.titleLabel.frame = CGRectMake(padX, CGRectGetMaxY(self.brandSubtitleLabel.frame) + 40, contentW, 24);
+    self.titleLabel.frame = CGRectMake(padX, CGRectGetMaxY(self.brandSubtitleLabel.frame) + 32, contentW, 24);
     
     self.inputContainer.frame = CGRectMake(padX, CGRectGetMaxY(self.titleLabel.frame) + 12, contentW, 76);
     self.placeholderHeaderLabel.frame = CGRectMake(16, 10, contentW - 32, 18);
     self.cardTextField.frame = CGRectMake(16, 32, contentW - 32, 34);
     
-    CGFloat switchY = CGRectGetMaxY(self.inputContainer.frame) + 16;
+    CGFloat switchY = CGRectGetMaxY(self.inputContainer.frame) + 14;
     self.localServerSwitch.frame = CGRectMake(padX, switchY, 51, 31);
     self.localServerLabel.frame = CGRectMake(padX + 60, switchY + 4, contentW - 60, 24);
     
-    self.startCaptureButton.frame = CGRectMake(padX, switchY + 46, contentW, 54);
+    self.serverTextField.frame = CGRectMake(padX, switchY + 38, contentW, 36);
+    
+    self.startCaptureButton.frame = CGRectMake(padX, CGRectGetMaxY(self.serverTextField.frame) + 16, contentW, 54);
     self.buttonGradient.frame = self.startCaptureButton.bounds;
 }
 
@@ -121,10 +124,27 @@
     [self.view addSubview:self.localServerSwitch];
     
     self.localServerLabel = [[UILabel alloc] init];
-    self.localServerLabel.text = @"Test Server (192.168.1.135:8080)";
+    self.localServerLabel.text = @"Test Mock Server";
     self.localServerLabel.font = [UIFont systemFontOfSize:14 weight:UIFontWeightMedium];
     self.localServerLabel.textColor = [UIColor colorWithRed:0.0 green:0.26 blue:0.48 alpha:1.0];
     [self.view addSubview:self.localServerLabel];
+    
+    self.serverTextField = [[UITextField alloc] init];
+    self.serverTextField.text = @"http://192.168.1.44:8080";
+    self.serverTextField.placeholder = @"http://<PC-IP>:8080";
+    self.serverTextField.font = [UIFont fontWithName:@"Courier" size:13] ?: [UIFont systemFontOfSize:13];
+    self.serverTextField.textColor = [UIColor colorWithRed:0.0 green:0.26 blue:0.48 alpha:1.0];
+    self.serverTextField.backgroundColor = [UIColor colorWithWhite:1.0 alpha:0.9];
+    self.serverTextField.layer.cornerRadius = 8;
+    self.serverTextField.layer.borderWidth = 1.0;
+    self.serverTextField.layer.borderColor = [UIColor colorWithWhite:0.85 alpha:1.0].CGColor;
+    self.serverTextField.autocapitalizationType = UITextAutocapitalizationTypeNone;
+    self.serverTextField.autocorrectionType = UITextAutocorrectionTypeNo;
+    self.serverTextField.clearButtonMode = UITextFieldViewModeWhileEditing;
+    UIView *leftPad = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 8, 20)];
+    self.serverTextField.leftView = leftPad;
+    self.serverTextField.leftViewMode = UITextFieldViewModeAlways;
+    [self.view addSubview:self.serverTextField];
     
     // 4. Button "Bắt đầu chụp" with ACB Navy Gradient
     self.startCaptureButton = [UIButton buttonWithType:UIButtonTypeCustom];
@@ -174,7 +194,11 @@
         ViewController *camVC = [[ViewController alloc] init];
         camVC.cardNumber = cardNum;
         if (self.localServerSwitch.isOn) {
-            camVC.serverBaseUrl = @"http://192.168.1.135:8080";
+            NSString *url = [self.serverTextField.text stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+            if (url.length == 0) {
+                url = @"http://192.168.1.44:8080";
+            }
+            camVC.serverBaseUrl = url;
         } else {
             camVC.serverBaseUrl = nil;
         }

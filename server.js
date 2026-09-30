@@ -1,7 +1,21 @@
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
+const os = require('os');
 const { execSync } = require('child_process');
+
+function getLocalIPs() {
+  const nets = os.networkInterfaces();
+  const ips = [];
+  for (const name of Object.keys(nets)) {
+    for (const net of nets[name]) {
+      if (net.family === 'IPv4' && !net.internal && !net.address.startsWith('169.254')) {
+        ips.push(net.address);
+      }
+    }
+  }
+  return ips;
+}
 
 const PORT = 8080;
 const HOST = '0.0.0.0';
@@ -273,6 +287,9 @@ const server = http.createServer((req, res) => {
 
   // 5. Web UI Dashboard at GET /
   if (req.method === 'GET' && pathname === '/') {
+    const localIPs = getLocalIPs();
+    const primaryIP = localIPs[0] || 'localhost';
+    const ipListStr = localIPs.map(ip => `http://${ip}:${PORT}`).join(' | ');
     const html = `<!DOCTYPE html>
 <html lang="vi">
 <head>
@@ -315,7 +332,8 @@ const server = http.createServer((req, res) => {
     </h1>
     <p>Máy chủ nhận ảnh và xác thực 10 rounds eKYC từ ứng dụng iOS Face Client.</p>
     <div class="endpoint-box">
-      Upload Target: <b>http://192.168.1.135:${PORT}/file/chunk/upload</b> (hoặc <b>http://localhost:${PORT}/file/chunk/upload</b>)
+      Upload Target iPhone: <b>http://${primaryIP}:${PORT}/file/chunk/upload</b> (hoặc <b>http://localhost:${PORT}/file/chunk/upload</b>)
+      <br><span style="font-size: 12px; opacity: 0.85;">IPs khả dụng: ${ipListStr}</span>
     </div>
   </div>
 

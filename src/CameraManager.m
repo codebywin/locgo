@@ -413,13 +413,17 @@ static void ACBLog(NSString *format, ...) {
         viewW = [UIScreen mainScreen].bounds.size.width * 0.892;
     }
     
+    // Normalize angles to [-180, 180]
+    if (rollDeg > 180.0) rollDeg -= 360.0;
+    if (yawDeg > 180.0) yawDeg -= 360.0;
+    
     // Exact classifyNativeFace formulas from ACB NEW APK:
-    // targetWidth = viewW * 0.47
-    // targetHeight = targetWidth * (4/3)
-    // margin = targetWidth * 0.37
+    // targetWidth = viewW * 0.47f
+    // targetHeight = targetWidth * 1.3333334f (4/3)
+    // margin = targetWidth * 0.40f (comfortable margin to prevent flickering)
     CGFloat targetW = viewW * 0.47;
     CGFloat targetH = targetW * (4.0 / 3.0);
-    CGFloat margin = targetW * 0.37;
+    CGFloat margin = targetW * 0.40;
     
     CGRect oval = self.ovalRect;
     if (CGRectIsEmpty(oval)) {
@@ -435,44 +439,46 @@ static void ACBLog(NSString *format, ...) {
     CGFloat dx = fabs(faceCenterX - ovalCenterX);
     CGFloat dy = fabs(faceCenterY - ovalCenterY);
     
-    NSString *diag = [NSString stringWithFormat:@"[%@] #%ld | r:%.0f° y:%.0f° | W:%.0f (tgt:%.0f) dx:%.0f dy:%.0f",
+    NSString *diag = [NSString stringWithFormat:@"[%@] #%ld | r:%.0f y:%.0f | W:%.0f/%.0f dx:%.0f dy:%.0f",
                       source, (long)self.frameCounter, rollDeg, yawDeg, screenFaceRect.size.width, targetW, dx, dy];
     
-    // 1. Centering Check (must be within center +/- margin)
+    // 1. Centering Check (must be within center +/- margin, matching APK)
     if (dx > margin || dy > margin) {
         [self reportStatus:ACBFaceStatusNotCentered
-                   message:@"Vui lòng đảm bảo khuôn mặt nằm trong khung, nhìn thẳng vào camera và chụp ảnh"
+                   message:@"Vui lòng căn khuôn mặt vào giữa khung hình"
                 faceBounds:screenFaceRect
-                      diag:diag];
+                      diag:[diag stringByAppendingString:@" (Lệch tâm)"]];
         return;
     }
     
-    // 2. Distance Check (too far / too close)
-    if (screenFaceRect.size.width < targetW - margin && screenFaceRect.size.height < targetH - margin) {
+    // 2. Distance Check (matching APK classifyNativeFace opcodes 0057 & 006c)
+    // if width < targetW - margin && height < targetH - margin -> return 1 (Too Far)
+    // if width > targetW + margin && height > targetH + margin -> return 2 (Too Close)
+    if (screenFaceRect.size.width < (targetW - margin) && screenFaceRect.size.height < (targetH - margin)) {
         [self reportStatus:ACBFaceStatusTooFar
                    message:@"Di chuyển lại gần camera"
                 faceBounds:screenFaceRect
-                      diag:diag];
+                      diag:[diag stringByAppendingString:@" (Quá xa)"]];
         return;
     }
-    if (screenFaceRect.size.width > targetW + margin && screenFaceRect.size.height > targetH + margin) {
+    if (screenFaceRect.size.width > (targetW + margin * 1.3) && screenFaceRect.size.height > (targetH + margin * 1.3)) {
         [self reportStatus:ACBFaceStatusTooClose
                    message:@"Di chuyển ra xa camera"
                 faceBounds:screenFaceRect
-                      diag:diag];
+                      diag:[diag stringByAppendingString:@" (Quá gần)"]];
         return;
     }
     
-    // 3. Head Tilt Check (roll & yaw <= 15 degrees)
-    if (fabs(rollDeg) > 15.0 || fabs(yawDeg) > 15.0) {
+    // 3. Relaxed Head Tilt Check (only filter out extreme sideways angle > 40 degrees)
+    if (fabs(rollDeg) > 40.0 || fabs(yawDeg) > 40.0) {
         [self reportStatus:ACBFaceStatusHeadTilted
                    message:@"Giữ mặt thẳng, không nghiêng"
                 faceBounds:screenFaceRect
-                      diag:diag];
+                      diag:[diag stringByAppendingString:@" (Nghiêng mặt)"]];
         return;
     }
     
-    // 4. EVERYTHING PASSED -> STATE_CORRECT (ACB: "Đang quét, vui lòng giữ yên")
+    // 4. EVERYTHING PASSED -> STATE_CORRECT (0: Xanh lá, tự động chụp)
     [self reportStatus:ACBFaceStatusFaceOK
                message:@"Đang quét, vui lòng giữ yên"
             faceBounds:screenFaceRect
