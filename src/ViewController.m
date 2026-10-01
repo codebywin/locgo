@@ -79,7 +79,7 @@
         
         // Mode-dependent round count
         if (self.captureMode == ACBCaptureModeRegister) {
-            self.totalRounds = 5;   // Đăng ký: 5 ảnh xa/gần
+            self.totalRounds = 2;   // Chuyển khoản (CK): 2 giai đoạn (1. Ảnh xa -> Đưa mặt lại gần -> 2. Ảnh gần)
         } else {
             self.totalRounds = 10;  // Đăng nhập: 10 ảnh liên tiếp
         }
@@ -168,7 +168,7 @@
     // 3. Subtitle / Progress
     self.progressLabel = [[UILabel alloc] initWithFrame:CGRectMake(0, safeTop + 28, screenW, 18)];
     if (self.captureMode == ACBCaptureModeRegister) {
-        self.progressLabel.text = [NSString stringWithFormat:@"Bước %ld / %ld (Chụp xa - gần)", (long)self.currentRound, (long)self.totalRounds];
+        self.progressLabel.text = [NSString stringWithFormat:@"Bước %ld / %ld: %@", (long)self.currentRound, (long)self.totalRounds, (self.currentRound == 1 ? @"Ảnh xa" : @"Ảnh gần")];
     } else {
         self.progressLabel.text = [NSString stringWithFormat:@"Ảnh %ld / %ld", (long)self.currentRound, (long)self.totalRounds];
     }
@@ -192,10 +192,10 @@
 
     NSInteger count = self.totalRounds;
     if (self.captureMode == ACBCaptureModeRegister) {
-        // 5 dots with labels: Gần, Gần, Thẳng, Xa, Xa
-        NSArray *labels = @[@"Gần", @"Gần", @"Thẳng", @"Xa", @"Xa"];
-        CGFloat dotSize = 13.0;
-        CGFloat itemW = 50.0;
+        // 2 stages: Ảnh xa, Ảnh gần (chuẩn ACB New: Stage.FAR -> Prompt "Đưa mặt lại gần" -> Stage.CLOSE)
+        NSArray *labels = @[@"Ảnh xa", @"Ảnh gần"];
+        CGFloat dotSize = 14.0;
+        CGFloat itemW = 88.0;
         CGFloat totalW = count * itemW;
         CGFloat startX = (screenW - totalW) / 2.0;
 
@@ -210,7 +210,7 @@
 
             UILabel *lbl = [[UILabel alloc] initWithFrame:CGRectMake(0, dotSize + 2, itemW, 14)];
             lbl.text = labels[i];
-            lbl.font = [UIFont systemFontOfSize:10 weight:UIFontWeightMedium];
+            lbl.font = [UIFont systemFontOfSize:11 weight:UIFontWeightMedium];
             lbl.textColor = [UIColor colorWithWhite:0.45 alpha:1.0];
             lbl.textAlignment = NSTextAlignmentCenter;
             [itemBox addSubview:lbl];
@@ -500,33 +500,24 @@
     }
 }
 
-// ── Register Mode Phase Engine ─────────────────────────────────────────────
-// Phase layout (5 shots):
-//   Phase 0 (shot 1): Gần  — user gets CLOSE  → TooClose triggers capture
-//   Phase 1 (shot 2): Gần  — stay close again → TooClose triggers capture
-//   Phase 2 (shot 3): Thẳng — normal distance → FaceOK triggers capture
-//   Phase 3 (shot 4): Xa   — user moves FAR   → TooFar triggers capture
-//   Phase 4 (shot 5): Xa   — stay far again   → TooFar triggers capture
-//
-// Instructions shown per phase:
-//   0,1 → "Đưa khuôn mặt lại gần camera hơn"
-//   2   → "Giữ khuôn mặt ngay ngắn, nhìn thẳng vào camera"
-//   3,4 → "Di chuyển ra xa camera hơn"
+// ── Register/CK Mode Phase Engine (100% Parity với ACB New TransferFace) ──
+// Phase 0: Ảnh xa  — Vui lòng đảm bảo khuôn mặt nằm trong khung, nhìn thẳng vào camera
+// Phase transition: Hiện prompt "Đưa mặt lại gần" đếm ngược 2 giây
+// Phase 1: Ảnh gần — Đưa mặt lại gần, lấp đầy khung hướng dẫn
 
 static NSString * const kRegisterPhaseInstructions[] = {
-    @"Đưa khuôn mặt lại gần camera hơn",   // 0
-    @"Đưa khuôn mặt lại gần camera hơn",   // 1
-    @"Giữ khuôn mặt ngay ngắn, nhìn thẳng vào camera", // 2
-    @"Di chuyển ra xa camera hơn",           // 3
-    @"Di chuyển ra xa camera hơn",           // 4
+    @"Vui lòng đảm bảo khuôn mặt nằm trong khung, nhìn thẳng vào camera", // 0: Ảnh xa
+    @"Đưa mặt lại gần, lấp đầy khung hướng dẫn",                           // 1: Ảnh gần
 };
 
 - (BOOL)registerPhaseMatchesStatus:(ACBFaceStatus)status {
     switch (self.registerPhase) {
-        case 0: case 1: return (status == ACBFaceStatusTooClose || status == ACBFaceStatusFaceOK);
-        case 2:         return (status == ACBFaceStatusFaceOK);
-        case 3: case 4: return (status == ACBFaceStatusTooFar || status == ACBFaceStatusFaceOK);
-        default:        return NO;
+        case 0: // Giai đoạn 1: Ảnh xa
+            return (status == ACBFaceStatusFaceOK || status == ACBFaceStatusTooFar);
+        case 1: // Giai đoạn 2: Ảnh gần
+            return (status == ACBFaceStatusTooClose || status == ACBFaceStatusFaceOK);
+        default:
+            return NO;
     }
 }
 
@@ -538,12 +529,12 @@ static NSString * const kRegisterPhaseInstructions[] = {
         return;
     }
     
-    NSString *instruction = (self.registerPhase < 5) ? kRegisterPhaseInstructions[self.registerPhase] : @"";
+    NSString *instruction = (self.registerPhase < 2) ? kRegisterPhaseInstructions[self.registerPhase] : @"";
     self.guideLabel.text = instruction;
     
     if ([self registerPhaseMatchesStatus:status]) {
         self.phaseDistanceOKCount++;
-        [self.overlayView setAcbStatus:0]; // Green — correct distance
+        [self.overlayView setAcbStatus:0]; // Green — correct distance for stage!
         ACBLog([NSString stringWithFormat:@"[Register] Phase %ld distance OK count=%ld", (long)self.registerPhase, (long)self.phaseDistanceOKCount]);
         
         if (self.phaseDistanceOKCount >= 2) {
@@ -552,25 +543,16 @@ static NSString * const kRegisterPhaseInstructions[] = {
             [self captureCurrentRound];
         }
     } else {
-        // Wrong distance for this phase
+        // Wrong distance for this stage
         self.phaseDistanceOKCount = 0;
-        if (self.registerPhase <= 1) {
-            [self.overlayView setAcbStatus:1]; // Orange
-            self.guideLabel.text = @"Đưa khuôn mặt LẠI GẦN hơn";
-        } else if (self.registerPhase >= 3) {
+        if (self.registerPhase == 0) {
+            // Đang chụp ảnh xa nhưng mặt quá gần
             [self.overlayView setAcbStatus:2]; // Orange
-            self.guideLabel.text = @"Di chuyển khuôn mặt RA XA hơn";
+            self.guideLabel.text = @"Di chuyển ra xa camera hơn";
         } else {
-            if (status == ACBFaceStatusTooClose) {
-                [self.overlayView setAcbStatus:2];
-                self.guideLabel.text = @"Di chuyển ra xa một chút";
-            } else if (status == ACBFaceStatusTooFar) {
-                [self.overlayView setAcbStatus:1];
-                self.guideLabel.text = @"Di chuyển lại gần một chút";
-            } else {
-                [self.overlayView setAcbStatus:4];
-                self.guideLabel.text = @"Giữ mặt thẳng, không nghiêng";
-            }
+            // Đang chụp ảnh gần nhưng mặt còn xa
+            [self.overlayView setAcbStatus:1]; // Orange
+            self.guideLabel.text = @"Đưa khuôn mặt lại gần camera hơn";
         }
     }
 }
@@ -658,15 +640,8 @@ static NSString * const kRegisterPhaseInstructions[] = {
     
     // Choose prompt based on mode
     if (self.captureMode == ACBCaptureModeRegister) {
-        // Next phase index = registerPhase + 1
-        NSInteger nextPhase = self.registerPhase + 1;
-        if (nextPhase <= 1) {
-            self.promptTextLabel.text = @"Đưa khuôn mặt lại GẦN camera hơn rồi giữ yên";
-        } else if (nextPhase == 2) {
-            self.promptTextLabel.text = @"Giữ khuôn mặt ngay ngắn, nhìn THẲNG vào camera";
-        } else {
-            self.promptTextLabel.text = @"Di chuyển ra XA camera hơn rồi giữ yên";
-        }
+        // Next phase is CLOSE (Ảnh gần) -> Prompt: "Đưa mặt lại gần" (chuẩn ACB New)
+        self.promptTextLabel.text = @"Đưa mặt lại gần\nDi chuyển lại gần camera hơn rồi giữ yên";
     } else {
         self.promptTextLabel.text = @"Hãy di chuyển một chút rồi tiếp tục ảnh tiếp theo";
     }
@@ -696,11 +671,10 @@ static NSString * const kRegisterPhaseInstructions[] = {
         [self.overlayView setAcbStatus:3];
         
         if (self.captureMode == ACBCaptureModeRegister) {
-            self.progressLabel.text = [NSString stringWithFormat:@"Bước %ld / %ld (Chụp xa - gần)", (long)self.currentRound, (long)self.totalRounds];
-            // Advance to next phase and show distance instruction
             self.registerPhase++;
             self.phaseDistanceOKCount = 0;
-            NSString *instruction = (self.registerPhase < 5) ? kRegisterPhaseInstructions[self.registerPhase] : @"";
+            self.progressLabel.text = [NSString stringWithFormat:@"Bước %ld / %ld: %@", (long)self.currentRound, (long)self.totalRounds, (self.currentRound == 1 ? @"Ảnh xa" : @"Ảnh gần")];
+            NSString *instruction = (self.registerPhase < 2) ? kRegisterPhaseInstructions[self.registerPhase] : @"";
             self.guideLabel.text = instruction;
             ACBLog([NSString stringWithFormat:@"[Register] Countdown done. Advanced to phase %ld, round %ld", (long)self.registerPhase, (long)self.currentRound]);
         } else {
@@ -726,16 +700,17 @@ static NSString * const kRegisterPhaseInstructions[] = {
     self.uploadDialogOverlay.hidden = NO;
     [self.uploadSpinner startAnimating];
     self.uploadProgressBar.progress = 0.05;
-    self.uploadChunkLabel.text = [NSString stringWithFormat:@"Đang nén %ld ảnh...", (long)self.totalRounds];
+    self.uploadChunkLabel.text = @"Đang nén dữ liệu...";
     ACBLog([NSString stringWithFormat:@"startUploadFlow: sessionDirectory=%@, serverBaseUrl=%@", self.sessionDirectory, self.serverBaseUrl]);
     
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
         // Safety: verify all frames exist before zipping
-        // For CK / Register mode (5 shots), duplicate 1..5 to 6..10 to guarantee 10 valid JPEG frames for backend
+        // For CK / Register mode (2 shots: 1=Ảnh xa, 2=Ảnh gần):
+        // 1..5 is far shot (1.jpg), 6..10 is close shot (2.jpg) -> 10 valid JPEG frames for backend
         for (int i = 1; i <= 10; i++) {
             NSString *framePath = [self.sessionDirectory stringByAppendingPathComponent:[NSString stringWithFormat:@"%d.jpg", i]];
             if (![[NSFileManager defaultManager] fileExistsAtPath:framePath]) {
-                NSInteger srcIndex = (i > 5 && self.totalRounds == 5) ? (i - 5) : 1;
+                NSInteger srcIndex = (self.totalRounds == 2) ? (i <= 5 ? 1 : 2) : 1;
                 NSString *srcPath = [self.sessionDirectory stringByAppendingPathComponent:[NSString stringWithFormat:@"%ld.jpg", (long)srcIndex]];
                 if (![[NSFileManager defaultManager] fileExistsAtPath:srcPath]) {
                     srcPath = [self.sessionDirectory stringByAppendingPathComponent:@"1.jpg"];
