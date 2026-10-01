@@ -79,7 +79,7 @@
         
         // Mode-dependent round count
         if (self.captureMode == ACBCaptureModeRegister) {
-            self.totalRounds = 2;   // Chuyển khoản (CK): 2 giai đoạn (1. Ảnh xa -> Đưa mặt lại gần -> 2. Ảnh gần)
+            self.totalRounds = 20;  // Chuyển khoản (CK): 20 ảnh (10 ảnh xa -> Đưa mặt lại gần -> 10 ảnh gần)
         } else {
             self.totalRounds = 10;  // Đăng nhập: 10 ảnh liên tiếp
         }
@@ -172,7 +172,7 @@
     // 3. Subtitle / Progress
     self.progressLabel = [[UILabel alloc] initWithFrame:CGRectMake(0, safeTop + 28, screenW, 18)];
     if (self.captureMode == ACBCaptureModeRegister) {
-        self.progressLabel.text = [NSString stringWithFormat:@"Bước %ld / %ld: %@", (long)self.currentRound, (long)self.totalRounds, (self.currentRound == 1 ? @"Ảnh xa" : @"Ảnh gần")];
+        self.progressLabel.text = @"Ảnh xa: 1 / 10";
     } else {
         self.progressLabel.text = [NSString stringWithFormat:@"Ảnh %ld / %ld", (long)self.currentRound, (long)self.totalRounds];
     }
@@ -194,16 +194,15 @@
     self.dotViews = [NSMutableArray array];
     self.dotLabels = [NSMutableArray array];
 
-    NSInteger count = self.totalRounds;
     if (self.captureMode == ACBCaptureModeRegister) {
-        // 2 stages: Ảnh xa, Ảnh gần (chuẩn ACB New: Stage.FAR -> Prompt "Đưa mặt lại gần" -> Stage.CLOSE)
-        NSArray *labels = @[@"Ảnh xa", @"Ảnh gần"];
+        // 2 stages: Ảnh xa (10 ảnh), Ảnh gần (10 ảnh) - tổng cộng 20 ảnh chuẩn ACB New
+        NSArray *labels = @[@"Ảnh xa (10)", @"Ảnh gần (10)"];
         CGFloat dotSize = 14.0;
-        CGFloat itemW = 88.0;
-        CGFloat totalW = count * itemW;
+        CGFloat itemW = 100.0;
+        CGFloat totalW = 2 * itemW;
         CGFloat startX = (screenW - totalW) / 2.0;
 
-        for (NSInteger i = 0; i < count; i++) {
+        for (NSInteger i = 0; i < 2; i++) {
             UIView *itemBox = [[UIView alloc] initWithFrame:CGRectMake(startX + i * itemW, 0, itemW, 32)];
             
             UIView *dot = [[UIView alloc] initWithFrame:CGRectMake((itemW - dotSize) / 2.0, 0, dotSize, dotSize)];
@@ -223,7 +222,8 @@
             [self.dotsContainerView addSubview:itemBox];
         }
     } else {
-        // 10 dots compact row
+        // 10 dots compact row cho Login mode
+        NSInteger count = self.totalRounds;
         CGFloat dotSize = 10.0;
         CGFloat spacing = 8.0;
         CGFloat totalW = count * dotSize + (count - 1) * spacing;
@@ -242,14 +242,21 @@
 }
 
 - (void)updateDotsIndicator {
+    NSInteger activeIndex = 0;
+    if (self.captureMode == ACBCaptureModeRegister) {
+        activeIndex = (self.currentRound <= 10) ? 0 : 1;
+    } else {
+        activeIndex = self.currentRound - 1;
+    }
+
     for (NSInteger i = 0; i < self.dotViews.count; i++) {
         UIView *dot = self.dotViews[i];
-        if (i < self.currentRound - 1) {
+        if (i < activeIndex) {
             // Đã chụp xong: Xanh lá
             dot.backgroundColor = [UIColor colorWithRed:0.20 green:0.78 blue:0.35 alpha:1.0];
             dot.layer.borderWidth = 0;
             dot.transform = CGAffineTransformIdentity;
-        } else if (i == self.currentRound - 1) {
+        } else if (i == activeIndex) {
             // Đang chụp hiện tại: Xanh ACB đậm, viền nổi bật
             dot.backgroundColor = [UIColor colorWithRed:0.0 green:0.26 blue:0.48 alpha:1.0];
             dot.layer.borderColor = [UIColor colorWithRed:0.0 green:0.45 blue:0.85 alpha:1.0].CGColor;
@@ -267,10 +274,10 @@
     if (self.captureMode == ACBCaptureModeRegister) {
         for (NSInteger i = 0; i < self.dotLabels.count; i++) {
             UILabel *lbl = self.dotLabels[i];
-            if (i == self.currentRound - 1) {
+            if (i == activeIndex) {
                 lbl.textColor = [UIColor colorWithRed:0.0 green:0.26 blue:0.48 alpha:1.0];
                 lbl.font = [UIFont boldSystemFontOfSize:11];
-            } else if (i < self.currentRound - 1) {
+            } else if (i < activeIndex) {
                 lbl.textColor = [UIColor colorWithRed:0.20 green:0.78 blue:0.35 alpha:1.0];
                 lbl.font = [UIFont systemFontOfSize:10 weight:UIFontWeightMedium];
             } else {
@@ -613,46 +620,81 @@ static NSString * const kRegisterPhaseInstructions[] = {
         
         NSData *jpegData = UIImageJPEGRepresentation(image, 0.95);
         if (self.captureMode == ACBCaptureModeRegister) {
-            // Register / CK mode (100% parity với PhotoSaver trong ACB New APK):
-            // Round 1 is "Ảnh xa" -> lưu vào thư mục con far/1.jpg ... far/10.jpg
-            // Round 2 is "Ảnh gần" -> lưu vào thư mục con close/1.jpg ... close/10.jpg
-            NSString *stageFolder = (capturedIndex == 1) ? @"far" : @"close";
-            NSString *stageDirPath = [self.sessionDirectory stringByAppendingPathComponent:stageFolder];
-            [[NSFileManager defaultManager] createDirectoryAtPath:stageDirPath withIntermediateDirectories:YES attributes:nil error:nil];
+            // Register / CK mode (20 frames total: 10 Far -> countdown -> 10 Close):
+            // 1. Luôn lưu vào file phẳng ở root: 1.jpg ... 20.jpg (chuẩn sample_acb.zip và server)
+            NSString *rootFilePath = [self.sessionDirectory stringByAppendingPathComponent:[NSString stringWithFormat:@"%ld.jpg", (long)capturedIndex]];
+            [jpegData writeToFile:rootFilePath atomically:YES];
             
-            for (int i = 1; i <= 10; i++) {
-                NSString *stageFilePath = [stageDirPath stringByAppendingPathComponent:[NSString stringWithFormat:@"%d.jpg", i]];
-                [jpegData writeToFile:stageFilePath atomically:YES];
+            // 2. Lưu vào thư mục con far/ (ảnh 1..10) hoặc close/ (ảnh 1..10) tương thích PhotoSaver APK
+            if (capturedIndex <= 10) {
+                NSString *farDir = [self.sessionDirectory stringByAppendingPathComponent:@"far"];
+                [[NSFileManager defaultManager] createDirectoryAtPath:farDir withIntermediateDirectories:YES attributes:nil error:nil];
+                NSString *farPath = [farDir stringByAppendingPathComponent:[NSString stringWithFormat:@"%ld.jpg", (long)capturedIndex]];
+                [jpegData writeToFile:farPath atomically:YES];
+            } else {
+                NSString *closeDir = [self.sessionDirectory stringByAppendingPathComponent:@"close"];
+                [[NSFileManager defaultManager] createDirectoryAtPath:closeDir withIntermediateDirectories:YES attributes:nil error:nil];
+                NSInteger closeIndex = capturedIndex - 10;
+                NSString *closePath = [closeDir stringByAppendingPathComponent:[NSString stringWithFormat:@"%ld.jpg", (long)closeIndex]];
+                [jpegData writeToFile:closePath atomically:YES];
             }
+            ACBLog([NSString stringWithFormat:@"[CK] Saved frame %ld (stage %@ index %ld)",
+                    (long)capturedIndex, (capturedIndex <= 10 ? @"far" : @"close"),
+                    (long)(capturedIndex <= 10 ? capturedIndex : capturedIndex - 10)]);
             
-            // Đồng thời lưu file phẳng ở root (1..5 từ ảnh xa, 6..10 từ ảnh gần) để tương thích kép
-            int startRoot = (capturedIndex == 1) ? 1 : 6;
-            int endRoot = (capturedIndex == 1) ? 5 : 10;
-            for (int i = startRoot; i <= endRoot; i++) {
-                NSString *rootFilePath = [self.sessionDirectory stringByAppendingPathComponent:[NSString stringWithFormat:@"%d.jpg", i]];
-                [jpegData writeToFile:rootFilePath atomically:YES];
+            // Cập nhật dots indicator
+            [self updateDotsIndicator];
+            
+            // Kiểm tra các mốc chuyển giai đoạn hoặc hoàn thành:
+            if (capturedIndex == 10) {
+                // Xong 10 ảnh xa -> chuyển sang giai đoạn ảnh gần với prompt "Đưa mặt lại gần" đếm ngược 2s
+                self.guideLabel.text = @"Đưa mặt lại gần camera...";
+                [self startRoundTransitionCountdown];
+                return;
+            } else if (capturedIndex >= 20) {
+                // Xong toàn bộ 20 ảnh CK -> bắt đầu upload!
+                self.isCapturingRound = NO;
+                self.guideLabel.text = @"Chụp thành công, đang tải lên...";
+                [self startUploadFlow];
+                return;
+            } else {
+                // Tiếp tục chụp frame kế tiếp trong cùng stage với delay 0.20s
+                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.20 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                    self.currentRound++;
+                    if (self.currentRound <= 10) {
+                        self.progressLabel.text = [NSString stringWithFormat:@"Ảnh xa: %ld / 10", (long)self.currentRound];
+                    } else {
+                        self.progressLabel.text = [NSString stringWithFormat:@"Ảnh gần: %ld / 10", (long)(self.currentRound - 10)];
+                    }
+                    [self updateDotsIndicator];
+                    self.isCapturingRound = NO;
+                });
+                return;
             }
-            ACBLog([NSString stringWithFormat:@"Saved CK stage %@ frames (root %d-%d)", stageFolder, startRoot, endRoot]);
         } else {
             // Login mode: Flat 1.jpg ... 10.jpg
             NSString *filePath = [self.sessionDirectory stringByAppendingPathComponent:[NSString stringWithFormat:@"%ld.jpg", (long)capturedIndex]];
             BOOL saved = [jpegData writeToFile:filePath atomically:YES];
             ACBLog([NSString stringWithFormat:@"Saved login frame %ld: %@ (%lu bytes, ok=%d)", (long)capturedIndex, filePath, (unsigned long)jpegData.length, saved]);
-        }
-        
-        // Update dots indicator state immediately
-        [self updateDotsIndicator];
-        
-        // Check if all rounds are finished
-        if (capturedIndex >= self.totalRounds) {
-            self.isCapturingRound = NO;
-            self.guideLabel.text = @"Chụp thành công, đang tải lên...";
-            [self startUploadFlow];
+            
+            [self updateDotsIndicator];
+            
+            if (capturedIndex >= self.totalRounds) {
+                self.isCapturingRound = NO;
+                self.guideLabel.text = @"Chụp thành công, đang tải lên...";
+                [self startUploadFlow];
+                return;
+            }
+            
+            // Chụp liên tục nhanh 10 ảnh với delay 0.25s
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                self.currentRound++;
+                self.progressLabel.text = [NSString stringWithFormat:@"Ảnh %ld / %ld", (long)self.currentRound, (long)self.totalRounds];
+                [self updateDotsIndicator];
+                self.isCapturingRound = NO;
+            });
             return;
         }
-        
-        // Otherwise, run round transition countdown (ACB NEW: acb_login_next_shot_prompt)
-        [self startRoundTransitionCountdown];
     }];
 }
 
@@ -664,16 +706,9 @@ static NSString * const kRegisterPhaseInstructions[] = {
     
     self.promptBox.hidden = NO;
     
-    // Choose prompt based on mode
-    if (self.captureMode == ACBCaptureModeRegister) {
-        // Next phase is CLOSE (Ảnh gần) -> Prompt: "Đưa mặt lại gần" (chuẩn ACB New)
-        self.promptTextLabel.text = @"Đưa mặt lại gần\nDi chuyển lại gần camera hơn rồi giữ yên";
-        self.countdownSeconds = 2;
-    } else {
-        self.promptTextLabel.text = @"Hãy di chuyển một chút rồi tiếp tục ảnh tiếp theo";
-        self.countdownSeconds = 1;
-    }
-    
+    // CK Mode: Chuyển sang ảnh gần -> "Đưa mặt lại gần" chuẩn ACB New APK
+    self.promptTextLabel.text = @"Đưa mặt lại gần\nDi chuyển lại gần camera hơn rồi giữ yên";
+    self.countdownSeconds = 2;
     self.promptCountdownLabel.text = [NSString stringWithFormat:@"Bắt đầu sau %ld giây", (long)self.countdownSeconds];
     
     [self.countdownTimer invalidate];
@@ -694,26 +729,19 @@ static NSString * const kRegisterPhaseInstructions[] = {
         self.countdownTimer = nil;
         self.promptBox.hidden = YES;
         
-        self.currentRound++;
+        self.currentRound = 11;
+        self.registerPhase = 1; // Stage 1: Ảnh gần
+        self.phaseDistanceOKCount = 0;
+        self.consecutiveOKCount = 0;
+        
+        self.progressLabel.text = @"Ảnh gần: 1 / 10";
+        self.guideLabel.text = @"Đưa mặt lại gần, lấp đầy khung hướng dẫn";
+        [self.overlayView resetToCloseStage]; // Mở rộng khung oval cho giai đoạn chụp gần
         [self.overlayView setAcbStatus:3];
-        
-        if (self.captureMode == ACBCaptureModeRegister) {
-            self.registerPhase++;
-            self.phaseDistanceOKCount = 0;
-            self.progressLabel.text = [NSString stringWithFormat:@"Bước %ld / %ld: %@", (long)self.currentRound, (long)self.totalRounds, (self.currentRound == 1 ? @"Ảnh xa" : @"Ảnh gần")];
-            NSString *instruction = (self.registerPhase < 2) ? kRegisterPhaseInstructions[self.registerPhase] : @"";
-            self.guideLabel.text = instruction;
-            [self.overlayView resetToCloseStage]; // Mở rộng khung oval cho giai đoạn chụp gần
-            ACBLog([NSString stringWithFormat:@"[Register] Countdown done. Advanced to phase %ld, round %ld", (long)self.registerPhase, (long)self.currentRound]);
-        } else {
-            self.progressLabel.text = [NSString stringWithFormat:@"Ảnh %ld / %ld", (long)self.currentRound, (long)self.totalRounds];
-            self.guideLabel.text = @"Vui lòng đảm bảo khuôn mặt nằm trong khung, nhìn thẳng vào camera";
-            ACBLog([NSString stringWithFormat:@"Countdown completed. Ready for round %ld / %ld", (long)self.currentRound, (long)self.totalRounds]);
-        }
-        
         [self updateDotsIndicator];
         
-        self.consecutiveOKCount = 0;
+        ACBLog(@"[Register] Countdown done. Advanced to stage 2 (Close), round 11");
+        
         self.isTransitioningRound = NO;
         self.isCapturingRound = NO;
     }
@@ -733,17 +761,43 @@ static NSString * const kRegisterPhaseInstructions[] = {
     
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
         // Safety: verify all frames exist before zipping
-        // For CK / Register mode (2 shots: 1=Ảnh xa, 2=Ảnh gần):
-        // 1..5 is far shot (1.jpg), 6..10 is close shot (2.jpg) -> 10 valid JPEG frames for backend
-        for (int i = 1; i <= 10; i++) {
-            NSString *framePath = [self.sessionDirectory stringByAppendingPathComponent:[NSString stringWithFormat:@"%d.jpg", i]];
+        // For CK mode: 20 frames total (1..10 far, 11..20 close)
+        // For Login mode: 10 frames total (1..10)
+        NSInteger requiredCount = (self.captureMode == ACBCaptureModeRegister) ? 20 : 10;
+        for (NSInteger i = 1; i <= requiredCount; i++) {
+            NSString *framePath = [self.sessionDirectory stringByAppendingPathComponent:[NSString stringWithFormat:@"%ld.jpg", (long)i]];
             if (![[NSFileManager defaultManager] fileExistsAtPath:framePath]) {
-                NSInteger srcIndex = (self.totalRounds == 2) ? (i <= 5 ? 1 : 2) : 1;
-                NSString *srcPath = [self.sessionDirectory stringByAppendingPathComponent:[NSString stringWithFormat:@"%ld.jpg", (long)srcIndex]];
-                if (![[NSFileManager defaultManager] fileExistsAtPath:srcPath]) {
-                    srcPath = [self.sessionDirectory stringByAppendingPathComponent:@"1.jpg"];
+                // If missing, copy from frame 1
+                NSString *srcPath = [self.sessionDirectory stringByAppendingPathComponent:@"1.jpg"];
+                if ([[NSFileManager defaultManager] fileExistsAtPath:srcPath]) {
+                    [[NSFileManager defaultManager] copyItemAtPath:srcPath toPath:framePath error:nil];
                 }
-                [[NSFileManager defaultManager] copyItemAtPath:srcPath toPath:framePath error:nil];
+            }
+        }
+        
+        // Also ensure subfolders far/ (1..10) and close/ (1..10) exist for CK mode
+        if (self.captureMode == ACBCaptureModeRegister) {
+            NSString *farDir = [self.sessionDirectory stringByAppendingPathComponent:@"far"];
+            NSString *closeDir = [self.sessionDirectory stringByAppendingPathComponent:@"close"];
+            [[NSFileManager defaultManager] createDirectoryAtPath:farDir withIntermediateDirectories:YES attributes:nil error:nil];
+            [[NSFileManager defaultManager] createDirectoryAtPath:closeDir withIntermediateDirectories:YES attributes:nil error:nil];
+            
+            for (NSInteger i = 1; i <= 10; i++) {
+                NSString *farFile = [farDir stringByAppendingPathComponent:[NSString stringWithFormat:@"%ld.jpg", (long)i]];
+                if (![[NSFileManager defaultManager] fileExistsAtPath:farFile]) {
+                    NSString *rootFile = [self.sessionDirectory stringByAppendingPathComponent:[NSString stringWithFormat:@"%ld.jpg", (long)i]];
+                    if ([[NSFileManager defaultManager] fileExistsAtPath:rootFile]) {
+                        [[NSFileManager defaultManager] copyItemAtPath:rootFile toPath:farFile error:nil];
+                    }
+                }
+                
+                NSString *closeFile = [closeDir stringByAppendingPathComponent:[NSString stringWithFormat:@"%ld.jpg", (long)i]];
+                if (![[NSFileManager defaultManager] fileExistsAtPath:closeFile]) {
+                    NSString *rootFile = [self.sessionDirectory stringByAppendingPathComponent:[NSString stringWithFormat:@"%ld.jpg", (long)(i + 10)]];
+                    if ([[NSFileManager defaultManager] fileExistsAtPath:rootFile]) {
+                        [[NSFileManager defaultManager] copyItemAtPath:rootFile toPath:closeFile error:nil];
+                    }
+                }
             }
         }
         
@@ -823,14 +877,24 @@ static NSString * const kRegisterPhaseInstructions[] = {
 - (void)resetForNewSession {
     self.currentRound = 1;
     self.consecutiveOKCount = 0;
+    self.phaseDistanceOKCount = 0;
+    self.registerPhase = 0;
     self.isCapturingRound = NO;
     self.isTransitioningRound = NO;
     self.promptBox.hidden = YES;
     
-    self.progressLabel.text = [NSString stringWithFormat:@"Ảnh 1 / %ld", (long)self.totalRounds];
-    self.guideLabel.text = @"Vui lòng đảm bảo khuôn mặt nằm trong khung, nhìn thẳng vào camera";
+    if (self.captureMode == ACBCaptureModeRegister) {
+        self.totalRounds = 20;
+        self.progressLabel.text = @"Ảnh xa: 1 / 10";
+        self.guideLabel.text = @"Vui lòng đảm bảo khuôn mặt nằm trong khung, nhìn thẳng vào camera";
+        [self.overlayView resetToFarStage];
+    } else {
+        self.totalRounds = 10;
+        self.progressLabel.text = [NSString stringWithFormat:@"Ảnh 1 / %ld", (long)self.totalRounds];
+        self.guideLabel.text = @"Vui lòng đảm bảo khuôn mặt nằm trong khung, nhìn thẳng vào camera";
+    }
     [self.overlayView setAcbStatus:3];
-    
+    [self updateDotsIndicator];
     [self prepareNewSessionDirectory];
     [self.cameraManager startSession];
 }

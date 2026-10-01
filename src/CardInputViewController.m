@@ -177,7 +177,7 @@
     // ── Button 2: Chụp Đăng ký / CK (outline style — BADOOActivity) ──────────
     self.registerButton = [UIButton buttonWithType:UIButtonTypeCustom];
     self.registerButton.backgroundColor = [UIColor whiteColor];
-    [self.registerButton setTitle:@"📋  Khuôn mặt Chuyển khoản (CK)  (Ảnh xa → Ảnh gần)" forState:UIControlStateNormal];
+    [self.registerButton setTitle:@"📋  Khuôn mặt Chuyển khoản (CK)  (20 ảnh: Xa → Gần)" forState:UIControlStateNormal];
     [self.registerButton setTitleColor:[UIColor colorWithRed:0.0 green:0.32 blue:0.58 alpha:1.0] forState:UIControlStateNormal];
     self.registerButton.titleLabel.font = [UIFont boldSystemFontOfSize:15];
     [self.registerButton addTarget:self action:@selector(onRegisterTapped) forControlEvents:UIControlEventTouchUpInside];
