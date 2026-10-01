@@ -34,14 +34,25 @@
     [self setNeedsDisplay];
 }
 
+- (void)resetToCloseStage {
+    self.isCloseStage = YES;
+    [self setNeedsDisplay];
+}
+
+- (void)resetToFarStage {
+    self.isCloseStage = NO;
+    [self setNeedsDisplay];
+}
+
 - (CGRect)ovalRect {
     CGFloat w = self.bounds.size.width;
     CGFloat halfW = w / 2.0;
     
     // Exact formulas from ACB NEW LoginFaceOverlayView.smali:
-    // OVAL_WIDTH_RATIO = 0.47f
-    // OVAL_ASPECT_RATIO = 1.3333334f (4/3)
-    CGFloat ovalW = w * 0.47;
+    // OVAL_WIDTH_RATIO = 0.47f (Far stage)
+    // In Close stage: expanded oval (0.64f) to guide user to bring face close, filling the frame!
+    CGFloat ratio = self.isCloseStage ? 0.64 : 0.47;
+    CGFloat ovalW = w * ratio;
     CGFloat ovalH = ovalW * (4.0 / 3.0);
     
     return CGRectMake(halfW - ovalW / 2.0, halfW - ovalH / 2.0, ovalW, ovalH);

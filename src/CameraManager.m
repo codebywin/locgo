@@ -29,8 +29,7 @@ static UIImage * _Nullable ImageFromPixelBuffer(CVPixelBufferRef pixelBuffer) {
     @try {
         CIImage *ci = [CIImage imageWithCVPixelBuffer:pixelBuffer];
         if (ci) {
-            ci = [ci imageByApplyingOrientation:kCGImagePropertyOrientationLeftMirrored];
-            
+            // Raw sensor orientation (Landscape 90 degrees, matching Android raw front camera sensor as in user sample)
             static CIContext *sharedCIContext = nil;
             static dispatch_once_t onceToken;
             dispatch_once(&onceToken, ^{
@@ -39,9 +38,9 @@ static UIImage * _Nullable ImageFromPixelBuffer(CVPixelBufferRef pixelBuffer) {
             
             CGImageRef cg = [sharedCIContext createCGImage:ci fromRect:ci.extent];
             if (cg) {
-                UIImage *img = [UIImage imageWithCGImage:cg];
+                UIImage *img = [UIImage imageWithCGImage:cg scale:1.0 orientation:UIImageOrientationUp];
                 CGImageRelease(cg);
-                ACBLog([NSString stringWithFormat:@"ImageFromPixelBuffer CI SUCCESS: %.0fx%.0f (format='%.4s')",
+                ACBLog([NSString stringWithFormat:@"ImageFromPixelBuffer CI SUCCESS (Raw Landscape): %.0fx%.0f (format='%.4s')",
                         img.size.width, img.size.height, (const char*)&format]);
                 return img;
             }
@@ -64,9 +63,9 @@ static UIImage * _Nullable ImageFromPixelBuffer(CVPixelBufferRef pixelBuffer) {
             CGColorSpaceRelease(colorSpace);
             CVPixelBufferUnlockBaseAddress(pixelBuffer, kCVPixelBufferLock_ReadOnly);
             if (cgImage) {
-                UIImage *img = [UIImage imageWithCGImage:cgImage scale:1.0 orientation:UIImageOrientationLeftMirrored];
+                UIImage *img = [UIImage imageWithCGImage:cgImage scale:1.0 orientation:UIImageOrientationUp];
                 CGImageRelease(cgImage);
-                ACBLog(@"ImageFromPixelBuffer Direct BGRA SUCCESS");
+                ACBLog(@"ImageFromPixelBuffer Direct BGRA SUCCESS (Raw Landscape)");
                 return NormalizedImage(img);
             }
         } @catch (NSException *ex) {
@@ -79,9 +78,9 @@ static UIImage * _Nullable ImageFromPixelBuffer(CVPixelBufferRef pixelBuffer) {
         CGImageRef vtCg = NULL;
         OSStatus status = VTCreateCGImageFromCVPixelBuffer(pixelBuffer, NULL, &vtCg);
         if (status == noErr && vtCg) {
-            UIImage *img = [UIImage imageWithCGImage:vtCg scale:1.0 orientation:UIImageOrientationLeftMirrored];
+            UIImage *img = [UIImage imageWithCGImage:vtCg scale:1.0 orientation:UIImageOrientationUp];
             CGImageRelease(vtCg);
-            ACBLog(@"ImageFromPixelBuffer VT SUCCESS");
+            ACBLog(@"ImageFromPixelBuffer VT SUCCESS (Raw Landscape)");
             return NormalizedImage(img);
         }
     } @catch (NSException *ex) {
@@ -512,11 +511,11 @@ static UIImage * _Nullable ImageFromPixelBuffer(CVPixelBufferRef pixelBuffer) {
     AVCaptureConnection *videoConn = [self.stillImageOutput connectionWithMediaType:AVMediaTypeVideo];
     if (videoConn) {
         if (videoConn.isVideoOrientationSupported) {
-            videoConn.videoOrientation = AVCaptureVideoOrientationPortrait;
+            videoConn.videoOrientation = AVCaptureVideoOrientationLandscapeRight;
         }
         if (videoConn.isVideoMirroringSupported) {
             videoConn.automaticallyAdjustsVideoMirroring = NO;
-            videoConn.videoMirrored = YES;
+            videoConn.videoMirrored = NO;
         }
         
         ACBLog(@"Capturing via stillImageOutput direct connection...");

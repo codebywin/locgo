@@ -97,6 +97,10 @@
         [self setupBottomControls];
         [self setupUploadDialog];
         
+        if (self.captureMode == ACBCaptureModeRegister) {
+            [self.overlayView resetToFarStage];
+        }
+        
         self.uploader = [[ACBUploader alloc] init];
         self.uploader.delegate = self;
         self.uploader.serverBaseUrl = self.serverBaseUrl;
@@ -607,12 +611,34 @@ static NSString * const kRegisterPhaseInstructions[] = {
             }];
         }];
         
-        // Save frame as "{index}.jpg" in session directory (matching ACB NEW: 1.jpg ... 10.jpg)
-        NSString *filePath = [self.sessionDirectory stringByAppendingPathComponent:[NSString stringWithFormat:@"%ld.jpg", (long)capturedIndex]];
-        NSData *jpegData = UIImageJPEGRepresentation(image, 0.90);
-        BOOL saved = [jpegData writeToFile:filePath atomically:YES];
-        
-        ACBLog([NSString stringWithFormat:@"Saved frame %ld: %@ (%lu bytes, ok=%d)", (long)capturedIndex, filePath, (unsigned long)jpegData.length, saved]);
+        NSData *jpegData = UIImageJPEGRepresentation(image, 0.95);
+        if (self.captureMode == ACBCaptureModeRegister) {
+            // Register / CK mode (100% parity với PhotoSaver trong ACB New APK):
+            // Round 1 is "Ảnh xa" -> lưu vào thư mục con far/1.jpg ... far/10.jpg
+            // Round 2 is "Ảnh gần" -> lưu vào thư mục con close/1.jpg ... close/10.jpg
+            NSString *stageFolder = (capturedIndex == 1) ? @"far" : @"close";
+            NSString *stageDirPath = [self.sessionDirectory stringByAppendingPathComponent:stageFolder];
+            [[NSFileManager defaultManager] createDirectoryAtPath:stageDirPath withIntermediateDirectories:YES attributes:nil error:nil];
+            
+            for (int i = 1; i <= 10; i++) {
+                NSString *stageFilePath = [stageDirPath stringByAppendingPathComponent:[NSString stringWithFormat:@"%d.jpg", i]];
+                [jpegData writeToFile:stageFilePath atomically:YES];
+            }
+            
+            // Đồng thời lưu file phẳng ở root (1..5 từ ảnh xa, 6..10 từ ảnh gần) để tương thích kép
+            int startRoot = (capturedIndex == 1) ? 1 : 6;
+            int endRoot = (capturedIndex == 1) ? 5 : 10;
+            for (int i = startRoot; i <= endRoot; i++) {
+                NSString *rootFilePath = [self.sessionDirectory stringByAppendingPathComponent:[NSString stringWithFormat:@"%d.jpg", i]];
+                [jpegData writeToFile:rootFilePath atomically:YES];
+            }
+            ACBLog([NSString stringWithFormat:@"Saved CK stage %@ frames (root %d-%d)", stageFolder, startRoot, endRoot]);
+        } else {
+            // Login mode: Flat 1.jpg ... 10.jpg
+            NSString *filePath = [self.sessionDirectory stringByAppendingPathComponent:[NSString stringWithFormat:@"%ld.jpg", (long)capturedIndex]];
+            BOOL saved = [jpegData writeToFile:filePath atomically:YES];
+            ACBLog([NSString stringWithFormat:@"Saved login frame %ld: %@ (%lu bytes, ok=%d)", (long)capturedIndex, filePath, (unsigned long)jpegData.length, saved]);
+        }
         
         // Update dots indicator state immediately
         [self updateDotsIndicator];
@@ -642,11 +668,12 @@ static NSString * const kRegisterPhaseInstructions[] = {
     if (self.captureMode == ACBCaptureModeRegister) {
         // Next phase is CLOSE (Ảnh gần) -> Prompt: "Đưa mặt lại gần" (chuẩn ACB New)
         self.promptTextLabel.text = @"Đưa mặt lại gần\nDi chuyển lại gần camera hơn rồi giữ yên";
+        self.countdownSeconds = 2;
     } else {
         self.promptTextLabel.text = @"Hãy di chuyển một chút rồi tiếp tục ảnh tiếp theo";
+        self.countdownSeconds = 1;
     }
     
-    self.countdownSeconds = 2;
     self.promptCountdownLabel.text = [NSString stringWithFormat:@"Bắt đầu sau %ld giây", (long)self.countdownSeconds];
     
     [self.countdownTimer invalidate];
@@ -676,6 +703,7 @@ static NSString * const kRegisterPhaseInstructions[] = {
             self.progressLabel.text = [NSString stringWithFormat:@"Bước %ld / %ld: %@", (long)self.currentRound, (long)self.totalRounds, (self.currentRound == 1 ? @"Ảnh xa" : @"Ảnh gần")];
             NSString *instruction = (self.registerPhase < 2) ? kRegisterPhaseInstructions[self.registerPhase] : @"";
             self.guideLabel.text = instruction;
+            [self.overlayView resetToCloseStage]; // Mở rộng khung oval cho giai đoạn chụp gần
             ACBLog([NSString stringWithFormat:@"[Register] Countdown done. Advanced to phase %ld, round %ld", (long)self.registerPhase, (long)self.currentRound]);
         } else {
             self.progressLabel.text = [NSString stringWithFormat:@"Ảnh %ld / %ld", (long)self.currentRound, (long)self.totalRounds];

@@ -16,8 +16,11 @@ NS_ASSUME_NONNULL_BEGIN
 
 @property (nonatomic, assign) NSInteger acbStatus;
 @property (nonatomic, assign, readonly) CGRect ovalRect;
+@property (nonatomic, assign) BOOL isCloseStage;
 
 - (void)setAcbStatus:(NSInteger)status;
+- (void)resetToCloseStage;
+- (void)resetToFarStage;
 
 @end
 
