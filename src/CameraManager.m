@@ -580,34 +580,21 @@ static NSInteger sDroppedFrameCount = 0;
     self.photoCaptureCompletion = completion;
     
     @try {
-        // Prefer JPEG codec
-        AVCapturePhotoSettings *settings = nil;
-        if ([self.photoOutput.availablePhotoCodecTypes containsObject:AVVideoCodecTypeJPEG]) {
-            settings = [AVCapturePhotoSettings photoSettingsWithFormat:@{AVVideoCodecKey: AVVideoCodecTypeJPEG}];
-        } else {
-            settings = [AVCapturePhotoSettings photoSettings];
-        }
+        AVCapturePhotoSettings *settings = [AVCapturePhotoSettings photoSettings];
         settings.flashMode = AVCaptureFlashModeOff;
-        
-        // Disable metadata during capture to give photo priority
-        for (AVCaptureConnection *c in self.metadataOutput.connections) {
-            c.enabled = NO;
-        }
         
         ACBLog(@"Dispatching capturePhotoWithSettings...");
         [self.photoOutput capturePhotoWithSettings:settings delegate:self];
         
-        // Watchdog: timeout 3.5s
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        // Watchdog: timeout 4.0s
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(4.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
             if (self.isCapturePending) {
-                ACBLog(@"WATCHDOG: Photo capture timeout after 3.5s");
+                ACBLog(@"WATCHDOG: Photo capture timeout after 4.0s");
                 self.isCapturePending = NO;
+                void (^comp)(UIImage *) = self.photoCaptureCompletion;
                 self.photoCaptureCompletion = nil;
-                for (AVCaptureConnection *c in self.metadataOutput.connections) {
-                    c.enabled = YES;
-                }
-                if (completion) {
-                    completion(nil);
+                if (comp) {
+                    comp(nil);
                 }
             }
         });
@@ -615,9 +602,6 @@ static NSInteger sDroppedFrameCount = 0;
         ACBLog(@"Exception in capturePhoto: %@", ex);
         self.isCapturePending = NO;
         self.photoCaptureCompletion = nil;
-        for (AVCaptureConnection *c in self.metadataOutput.connections) {
-            c.enabled = YES;
-        }
         if (completion) {
             dispatch_async(dispatch_get_main_queue(), ^{
                 completion(nil);
@@ -628,33 +612,40 @@ static NSInteger sDroppedFrameCount = 0;
 
 #pragma mark - AVCapturePhotoCaptureDelegate
 
-- (void)captureOutput:(AVCapturePhotoOutput *)output 
-    willCapturePhotoForResolvedSettings:(AVCaptureResolvedPhotoSettings *)resolvedSettings {
+- (void)captureOutput:(AVCapturePhotoOutput *)output willBeginCaptureForResolvedSettings:(AVCaptureResolvedPhotoSettings *)resolvedSettings {
+    ACBLog(@"photoOutput: willBeginCapture");
+}
+
+- (void)captureOutput:(AVCapturePhotoOutput *)output willCapturePhotoForResolvedSettings:(AVCaptureResolvedPhotoSettings *)resolvedSettings {
     ACBLog(@"photoOutput: willCapturePhoto");
 }
 
-- (void)captureOutput:(AVCapturePhotoOutput *)output 
-    didFinishProcessingPhoto:(AVCapturePhoto *)photo 
-                       error:(NSError *)error {
-    ACBLog([NSString stringWithFormat:@"photoOutput: didFinishProcessingPhoto error=%@", error]);
+- (void)captureOutput:(AVCapturePhotoOutput *)output didCapturePhotoForResolvedSettings:(AVCaptureResolvedPhotoSettings *)resolvedSettings {
+    ACBLog(@"photoOutput: didCapturePhoto");
+}
+
+- (void)captureOutput:(AVCapturePhotoOutput *)output didFinishProcessingPhoto:(AVCapturePhoto *)photo error:(nullable NSError *)error {
+    ACBLog([NSString stringWithFormat:@"photoOutput: didFinishProcessingPhoto (photo=%@, error=%@)", photo, error]);
+    if (!self.isCapturePending) return;
     
     UIImage *resultImage = nil;
     if (!error && photo) {
         @try {
-            NSData *jpegData = [photo fileDataRepresentation];
-            if (jpegData && jpegData.length > 0) {
-                resultImage = [UIImage imageWithData:jpegData];
-                ACBLog([NSString stringWithFormat:@"photoOutput: JPEG decoded %lu bytes, image=%.0fx%.0f",
-                        (unsigned long)jpegData.length, resultImage.size.width, resultImage.size.height]);
+            CGImageRef cgImage = [photo CGImageRepresentation];
+            if (cgImage) {
+                resultImage = [UIImage imageWithCGImage:cgImage];
+                ACBLog([NSString stringWithFormat:@"photoOutput: CGImage extracted %.0fx%.0f", resultImage.size.width, resultImage.size.height]);
+            } else {
+                NSData *jpegData = [photo fileDataRepresentation];
+                if (jpegData && jpegData.length > 0) {
+                    resultImage = [UIImage imageWithData:jpegData];
+                    ACBLog([NSString stringWithFormat:@"photoOutput: JPEG file decoded %lu bytes, %.0fx%.0f",
+                            (unsigned long)jpegData.length, resultImage.size.width, resultImage.size.height]);
+                }
             }
         } @catch (NSException *ex) {
             ACBLog(@"photoOutput: exception decoding: %@", ex);
         }
-    }
-    
-    // Re-enable metadata
-    for (AVCaptureConnection *c in self.metadataOutput.connections) {
-        c.enabled = YES;
     }
     
     self.isCapturePending = NO;
@@ -668,25 +659,40 @@ static NSInteger sDroppedFrameCount = 0;
     }
 }
 
-- (void)captureOutput:(AVCapturePhotoOutput *)output 
-    didFinishCaptureForResolvedSettings:(AVCaptureResolvedPhotoSettings *)resolvedSettings 
-                                   error:(NSError *)error {
-    ACBLog([NSString stringWithFormat:@"photoOutput: didFinishCapture error=%@", error]);
+- (void)captureOutput:(AVCapturePhotoOutput *)output didFinishProcessingPhotoSampleBuffer:(nullable CMSampleBufferRef)photoSampleBuffer previewPhotoSampleBuffer:(nullable CMSampleBufferRef)previewPhotoSampleBuffer resolvedSettings:(AVCaptureResolvedPhotoSettings *)resolvedSettings bracketSettings:(nullable AVCaptureBracketedStillImageSettings *)bracketSettings error:(nullable NSError *)error {
+    ACBLog([NSString stringWithFormat:@"photoOutput: didFinishProcessingPhotoSampleBuffer (buf=%p, error=%@)", photoSampleBuffer, error]);
+    if (!self.isCapturePending) return;
     
-    if (error) {
-        for (AVCaptureConnection *c in self.metadataOutput.connections) {
-            c.enabled = YES;
+    UIImage *resultImage = nil;
+    if (photoSampleBuffer) {
+        NSData *jpegData = [AVCapturePhotoOutput JPEGPhotoDataRepresentationForJPEGSampleBuffer:photoSampleBuffer previewPhotoSampleBuffer:previewPhotoSampleBuffer];
+        if (jpegData && jpegData.length > 0) {
+            resultImage = [UIImage imageWithData:jpegData];
+            ACBLog([NSString stringWithFormat:@"photoOutput: SampleBuffer decoded %lu bytes, %.0fx%.0f", (unsigned long)jpegData.length, resultImage.size.width, resultImage.size.height]);
         }
-        
-        if (self.isCapturePending) {
-            self.isCapturePending = NO;
-            void (^comp)(UIImage *) = self.photoCaptureCompletion;
-            self.photoCaptureCompletion = nil;
-            if (comp) {
-                dispatch_async(dispatch_get_main_queue(), ^{
-                    comp(nil);
-                });
-            }
+    }
+    
+    self.isCapturePending = NO;
+    void (^comp)(UIImage *) = self.photoCaptureCompletion;
+    self.photoCaptureCompletion = nil;
+    
+    if (comp) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            comp(resultImage);
+        });
+    }
+}
+
+- (void)captureOutput:(AVCapturePhotoOutput *)output didFinishCaptureForResolvedSettings:(AVCaptureResolvedPhotoSettings *)resolvedSettings error:(nullable NSError *)error {
+    ACBLog([NSString stringWithFormat:@"photoOutput: didFinishCapture error=%@", error]);
+    if (self.isCapturePending) {
+        self.isCapturePending = NO;
+        void (^comp)(UIImage *) = self.photoCaptureCompletion;
+        self.photoCaptureCompletion = nil;
+        if (comp) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                comp(nil);
+            });
         }
     }
 }
