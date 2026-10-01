@@ -51,6 +51,12 @@
 @property (nonatomic, strong) NSString *userName;
 @property (nonatomic, strong) NSString *bankType;
 
+// Register Mode Phase State
+// Phases 0-4 for 5 shots: [gần, gần, thẳng, xa, xa]
+// Expected status per phase: [TooClose, TooClose, FaceOK, TooFar, TooFar]
+@property (nonatomic, assign) NSInteger registerPhase;         // 0..4
+@property (nonatomic, assign) NSInteger phaseDistanceOKCount;  // consecutive frames matching expected distance
+
 @end
 
 @implementation ViewController
@@ -66,11 +72,18 @@
         self.userName = @"NGUYEN VAN A";
         self.bankType = @"ACB";
         
-        self.totalRounds = 10;
+        // Mode-dependent round count
+        if (self.captureMode == ACBCaptureModeRegister) {
+            self.totalRounds = 5;   // Đăng ký: 5 ảnh xa/gần
+        } else {
+            self.totalRounds = 10;  // Đăng nhập: 10 ảnh liên tiếp
+        }
         self.currentRound = 1;
         self.consecutiveOKCount = 0;
         self.isCapturingRound = NO;
         self.isTransitioningRound = NO;
+        self.registerPhase = 0;
+        self.phaseDistanceOKCount = 0;
         
         [self prepareNewSessionDirectory];
         
@@ -136,16 +149,18 @@
     [self.backButton addTarget:self action:@selector(onBackTapped) forControlEvents:UIControlEventTouchUpInside];
     [self.view addSubview:self.backButton];
     
-    // 2. Title "Chụp ảnh khuôn mặt" (ACB NEW: acb_take_photo_title)
+    // 2. Title
     CGFloat screenW = [UIScreen mainScreen].bounds.size.width;
     self.titleLabel = [[UILabel alloc] initWithFrame:CGRectMake(0, safeTop + 36, screenW, 28)];
-    self.titleLabel.text = @"Chụp ảnh khuôn mặt";
+    self.titleLabel.text = (self.captureMode == ACBCaptureModeRegister)
+        ? @"Đăng ký khuôn mặt"
+        : @"Chụp ảnh khuôn mặt";
     self.titleLabel.font = [UIFont boldSystemFontOfSize:21];
     self.titleLabel.textColor = [UIColor blackColor];
     self.titleLabel.textAlignment = NSTextAlignmentCenter;
     [self.view addSubview:self.titleLabel];
     
-    // 3. Subtitle / Progress "Ảnh 1 / 10" (ACB NEW: acb_login_round_indicator)
+    // 3. Subtitle / Progress
     self.progressLabel = [[UILabel alloc] initWithFrame:CGRectMake(0, safeTop + 66, screenW, 24)];
     self.progressLabel.text = [NSString stringWithFormat:@"Ảnh %ld / %ld", (long)self.currentRound, (long)self.totalRounds];
     self.progressLabel.font = [UIFont boldSystemFontOfSize:17];
@@ -331,6 +346,13 @@
 - (void)cameraManagerDidUpdateFaceStatus:(ACBFaceStatus)status message:(NSString *)message faceBounds:(CGRect)screenRect {
     if (self.isCapturingRound || self.isTransitioningRound) return;
     
+    // ── REGISTER MODE: distance-phase-driven auto capture ──────────────────
+    if (self.captureMode == ACBCaptureModeRegister) {
+        [self handleRegisterModeStatus:status];
+        return;
+    }
+    
+    // ── LOGIN MODE (default): FaceOK consecutive-count auto capture ─────────
     self.guideLabel.text = message;
     
     switch (status) {
@@ -371,6 +393,70 @@
     }
 }
 
+// ── Register Mode Phase Engine ─────────────────────────────────────────────
+// Phase layout (5 shots):
+//   Phase 0 (shot 1): Gần  — user gets CLOSE  → TooClose triggers capture
+//   Phase 1 (shot 2): Gần  — stay close again → TooClose triggers capture
+//   Phase 2 (shot 3): Thẳng — normal distance → FaceOK triggers capture
+//   Phase 3 (shot 4): Xa   — user moves FAR   → TooFar triggers capture
+//   Phase 4 (shot 5): Xa   — stay far again   → TooFar triggers capture
+//
+// Instructions shown per phase:
+//   0,1 → "Đưa khuôn mặt lại gần camera hơn"
+//   2   → "Giữ khuôn mặt ngay ngắn, nhìn thẳng vào camera"
+//   3,4 → "Di chuyển ra xa camera hơn"
+
+static NSString * const kRegisterPhaseInstructions[] = {
+    @"Đưa khuôn mặt lại gần camera hơn",   // 0
+    @"Đưa khuôn mặt lại gần camera hơn",   // 1
+    @"Giữ khuôn mặt ngay ngắn, nhìn thẳng vào camera", // 2
+    @"Di chuyển ra xa camera hơn",           // 3
+    @"Di chuyển ra xa camera hơn",           // 4
+};
+
+- (BOOL)registerPhaseMatchesStatus:(ACBFaceStatus)status {
+    switch (self.registerPhase) {
+        case 0: case 1: return (status == ACBFaceStatusTooClose || status == ACBFaceStatusFaceOK);
+        case 2:         return (status == ACBFaceStatusFaceOK);
+        case 3: case 4: return (status == ACBFaceStatusTooFar || status == ACBFaceStatusFaceOK);
+        default:        return NO;
+    }
+}
+
+- (void)handleRegisterModeStatus:(ACBFaceStatus)status {
+    if (status == ACBFaceStatusNoFace || status == ACBFaceStatusNotCentered || status == ACBFaceStatusMultipleFaces) {
+        [self.overlayView setAcbStatus:3]; // Blue — no face
+        self.phaseDistanceOKCount = 0;
+        self.guideLabel.text = @"Vui lòng đảm bảo khuôn mặt nằm trong khung";
+        return;
+    }
+    
+    NSString *instruction = (self.registerPhase < 5) ? kRegisterPhaseInstructions[self.registerPhase] : @"";
+    self.guideLabel.text = instruction;
+    
+    if ([self registerPhaseMatchesStatus:status]) {
+        self.phaseDistanceOKCount++;
+        [self.overlayView setAcbStatus:0]; // Green — correct distance
+        ACBLog([NSString stringWithFormat:@"[Register] Phase %ld distance OK count=%ld", (long)self.registerPhase, (long)self.phaseDistanceOKCount]);
+        
+        if (self.phaseDistanceOKCount >= 3) {
+            // Distance stable — auto capture this phase
+            ACBLog([NSString stringWithFormat:@"[Register] Phase %ld AUTO CAPTURE triggered", (long)self.registerPhase]);
+            [self captureCurrentRound];
+        }
+    } else {
+        // Wrong distance for this phase
+        self.phaseDistanceOKCount = 0;
+        if (status == ACBFaceStatusTooClose) {
+            [self.overlayView setAcbStatus:2]; // Orange — too close
+        } else if (status == ACBFaceStatusTooFar) {
+            [self.overlayView setAcbStatus:1]; // Orange — too far
+        } else {
+            [self.overlayView setAcbStatus:4]; // Orange — tilted
+        }
+    }
+}
+
 - (void)cameraManagerPermissionDenied {
     UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Quyền truy cập Camera"
                                                                    message:@"Ứng dụng cần quyền Camera để chụp ảnh khuôn mặt eKYC. Vui lòng cấp quyền trong Cài đặt."
@@ -381,7 +467,7 @@
     [self presentViewController:alert animated:YES completion:nil];
 }
 
-#pragma mark - 10 Rounds Orchestrator Engine (Exact ACB NEW Parity)
+#pragma mark - Capture Orchestrator
 
 - (void)onViewFinderTapped {
     if (!self.isCapturingRound && !self.isTransitioningRound) {
@@ -445,9 +531,24 @@
     self.isTransitioningRound = YES;
     self.isCapturingRound = YES; // Lock capture during countdown
     self.consecutiveOKCount = 0;
+    self.phaseDistanceOKCount = 0;
     
     self.promptBox.hidden = NO;
-    self.promptTextLabel.text = @"Hãy di chuyển một chút rồi tiếp tục ảnh tiếp theo";
+    
+    // Choose prompt based on mode
+    if (self.captureMode == ACBCaptureModeRegister) {
+        // Next phase index = registerPhase + 1
+        NSInteger nextPhase = self.registerPhase + 1;
+        if (nextPhase <= 1) {
+            self.promptTextLabel.text = @"Đưa khuôn mặt lại GẦN camera hơn rồi giữ yên";
+        } else if (nextPhase == 2) {
+            self.promptTextLabel.text = @"Giữ khuôn mặt ngay ngắn, nhìn THẲNG vào camera";
+        } else {
+            self.promptTextLabel.text = @"Di chuyển ra XA camera hơn rồi giữ yên";
+        }
+    } else {
+        self.promptTextLabel.text = @"Hãy di chuyển một chút rồi tiếp tục ảnh tiếp theo";
+    }
     
     self.countdownSeconds = 2;
     self.promptCountdownLabel.text = [NSString stringWithFormat:@"Bắt đầu sau %ld giây", (long)self.countdownSeconds];
@@ -473,12 +574,22 @@
         self.currentRound++;
         self.progressLabel.text = [NSString stringWithFormat:@"Ảnh %ld / %ld", (long)self.currentRound, (long)self.totalRounds];
         [self.overlayView setAcbStatus:3];
-        self.guideLabel.text = @"Vui lòng đảm bảo khuôn mặt nằm trong khung, nhìn thẳng vào camera";
+        
+        if (self.captureMode == ACBCaptureModeRegister) {
+            // Advance to next phase and show distance instruction
+            self.registerPhase++;
+            self.phaseDistanceOKCount = 0;
+            NSString *instruction = (self.registerPhase < 5) ? kRegisterPhaseInstructions[self.registerPhase] : @"";
+            self.guideLabel.text = instruction;
+            ACBLog([NSString stringWithFormat:@"[Register] Countdown done. Advanced to phase %ld, round %ld", (long)self.registerPhase, (long)self.currentRound]);
+        } else {
+            self.guideLabel.text = @"Vui lòng đảm bảo khuôn mặt nằm trong khung, nhìn thẳng vào camera";
+            ACBLog([NSString stringWithFormat:@"Countdown completed. Ready for round %ld / %ld", (long)self.currentRound, (long)self.totalRounds]);
+        }
         
         self.consecutiveOKCount = 0;
         self.isTransitioningRound = NO;
         self.isCapturingRound = NO;
-        ACBLog([NSString stringWithFormat:@"Countdown completed. Ready for round %ld / %ld", (long)self.currentRound, (long)self.totalRounds]);
     }
 }
 

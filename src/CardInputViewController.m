@@ -9,6 +9,7 @@
 @property (nonatomic, strong) UIView *inputContainer;
 @property (nonatomic, strong) UILabel *placeholderHeaderLabel;
 @property (nonatomic, strong) UITextField *cardTextField;
+@property (nonatomic, strong) UISegmentedControl *modeSegment;  // 0=Đăng nhập, 1=Đăng ký
 @property (nonatomic, strong) UIButton *startCaptureButton;
 @property (nonatomic, strong) CAGradientLayer *buttonGradient;
 @property (nonatomic, strong) UISwitch *localServerSwitch;
@@ -55,7 +56,10 @@
     self.placeholderHeaderLabel.frame = CGRectMake(16, 10, contentW - 32, 18);
     self.cardTextField.frame = CGRectMake(16, 32, contentW - 32, 34);
     
-    CGFloat switchY = CGRectGetMaxY(self.inputContainer.frame) + 14;
+    // Mode selector
+    self.modeSegment.frame = CGRectMake(padX, CGRectGetMaxY(self.inputContainer.frame) + 14, contentW, 38);
+    
+    CGFloat switchY = CGRectGetMaxY(self.modeSegment.frame) + 14;
     self.localServerSwitch.frame = CGRectMake(padX, switchY, 51, 31);
     self.localServerLabel.frame = CGRectMake(padX + 60, switchY + 4, contentW - 60, 24);
     
@@ -117,7 +121,17 @@
     self.cardTextField.delegate = self;
     [self.inputContainer addSubview:self.cardTextField];
     
-    // 3. Local Test Server Switch
+    // 3. Mode Selector — Đăng nhập (10 ảnh) / Đăng ký (5 ảnh xa gần)
+    self.modeSegment = [[UISegmentedControl alloc] initWithItems:@[@"Đăng nhập (10 ảnh)", @"Đăng ký (5 ảnh)"]];
+    self.modeSegment.selectedSegmentIndex = 0; // Default: Đăng nhập
+    if (@available(iOS 13.0, *)) {
+        self.modeSegment.selectedSegmentTintColor = [UIColor colorWithRed:0.0 green:0.26 blue:0.48 alpha:1.0];
+        [self.modeSegment setTitleTextAttributes:@{NSForegroundColorAttributeName: [UIColor whiteColor]} forState:UIControlStateSelected];
+        [self.modeSegment setTitleTextAttributes:@{NSForegroundColorAttributeName: [UIColor colorWithRed:0.0 green:0.26 blue:0.48 alpha:1.0]} forState:UIControlStateNormal];
+    }
+    [self.view addSubview:self.modeSegment];
+    
+    // 4. Local Test Server Switch
     self.localServerSwitch = [[UISwitch alloc] init];
     self.localServerSwitch.on = YES;
     self.localServerSwitch.onTintColor = [UIColor colorWithRed:0.0 green:0.45 blue:0.85 alpha:1.0];
@@ -188,11 +202,14 @@
         return;
     }
     
-    // Open Camera Face Capture screen (Orchestrator 10 rounds)
+    // Open Camera Face Capture screen
     @try {
         NSLog(@"[ACBFace] Opening camera view with card: %@", cardNum);
         ViewController *camVC = [[ViewController alloc] init];
         camVC.cardNumber = cardNum;
+        camVC.captureMode = (self.modeSegment.selectedSegmentIndex == 1)
+            ? ACBCaptureModeRegister
+            : ACBCaptureModeLogin;
         if (self.localServerSwitch.isOn) {
             NSString *url = [self.serverTextField.text stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
             if (url.length == 0) {
