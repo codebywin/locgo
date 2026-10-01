@@ -57,12 +57,13 @@ static UIImage * _Nullable NormalizedImage(UIImage *image) {
         self.captureSession = [[AVCaptureSession alloc] init];
         [self.captureSession beginConfiguration];
         
-        if ([self.captureSession canSetSessionPreset:AVCaptureSessionPreset1280x720]) {
+        // Use AVCaptureSessionPresetPhoto for optimal still capture on front camera
+        if ([self.captureSession canSetSessionPreset:AVCaptureSessionPresetPhoto]) {
+            self.captureSession.sessionPreset = AVCaptureSessionPresetPhoto;
+            ACBLog(@"Session preset configured to AVCaptureSessionPresetPhoto");
+        } else if ([self.captureSession canSetSessionPreset:AVCaptureSessionPreset1280x720]) {
             self.captureSession.sessionPreset = AVCaptureSessionPreset1280x720;
             ACBLog(@"Session preset configured to AVCaptureSessionPreset1280x720");
-        } else if ([self.captureSession canSetSessionPreset:AVCaptureSessionPreset640x480]) {
-            self.captureSession.sessionPreset = AVCaptureSessionPreset640x480;
-            ACBLog(@"Session preset configured to AVCaptureSessionPreset640x480");
         }
         
         // Front Camera Discovery
@@ -114,19 +115,6 @@ static UIImage * _Nullable NormalizedImage(UIImage *image) {
                 self.previewLayer.connection.automaticallyAdjustsVideoMirroring = NO;
                 self.previewLayer.connection.videoMirrored = YES;
             }
-        }
-        
-        AVCaptureConnection *photoConn = [self.photoOutput connectionWithMediaType:AVMediaTypeVideo];
-        if (photoConn) {
-            photoConn.enabled = YES;
-            if (photoConn.isVideoOrientationSupported) {
-                photoConn.videoOrientation = AVCaptureVideoOrientationPortrait;
-            }
-            if (photoConn.isVideoMirroringSupported) {
-                photoConn.automaticallyAdjustsVideoMirroring = NO;
-                photoConn.videoMirrored = YES;
-            }
-            ACBLog([NSString stringWithFormat:@"photoConn configured: isEnabled=%d, isActive=%d", photoConn.isEnabled, photoConn.isActive]);
         }
         
         [self.captureSession commitConfiguration];
@@ -404,15 +392,12 @@ static UIImage * _Nullable NormalizedImage(UIImage *image) {
     self.isCapturePending = YES;
     self.photoCaptureCompletion = completion;
     
+    // Temporarily pause metadata delegate so the ISP can dedicate 100% of its pipeline to photo processing
+    [self.metadataOutput setMetadataObjectsDelegate:nil queue:nil];
+    ACBLog(@"Metadata output delegate paused for photo capture");
+    
     @try {
-        AVCapturePhotoSettings *settings = nil;
-        if ([self.photoOutput.availablePhotoCodecTypes containsObject:AVVideoCodecTypeJPEG]) {
-            settings = [AVCapturePhotoSettings photoSettingsWithFormat:@{AVVideoCodecKey: AVVideoCodecTypeJPEG}];
-            ACBLog(@"Using photoSettingsWithFormat: AVVideoCodecTypeJPEG");
-        } else {
-            settings = [AVCapturePhotoSettings photoSettings];
-            ACBLog(@"Using default photoSettings");
-        }
+        AVCapturePhotoSettings *settings = [AVCapturePhotoSettings photoSettings];
         settings.flashMode = AVCaptureFlashModeOff;
         
         ACBLog(@"Dispatching capturePhotoWithSettings...");
@@ -422,30 +407,41 @@ static UIImage * _Nullable NormalizedImage(UIImage *image) {
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(4.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
             if (self.isCapturePending) {
                 ACBLog(@"WATCHDOG: Photo capture timeout after 4.0s");
-                self.isCapturePending = NO;
-                void (^comp)(UIImage *) = self.photoCaptureCompletion;
-                self.photoCaptureCompletion = nil;
-                if (comp) {
-                    comp(nil);
-                }
+                [self finishCaptureWithImage:nil];
             }
         });
     } @catch (NSException *ex) {
         ACBLog([NSString stringWithFormat:@"Exception in capturePhoto: %@", ex]);
-        self.isCapturePending = NO;
-        self.photoCaptureCompletion = nil;
-        if (completion) {
-            dispatch_async(dispatch_get_main_queue(), ^{
-                completion(nil);
-            });
-        }
+        [self finishCaptureWithImage:nil];
+    }
+}
+
+- (void)finishCaptureWithImage:(UIImage * _Nullable)image {
+    if (!self.isCapturePending) return;
+    self.isCapturePending = NO;
+    
+    // Restore metadata output delegate
+    @try {
+        [self.metadataOutput setMetadataObjectsDelegate:self queue:self.metadataQueue];
+        ACBLog(@"Metadata output delegate restored after photo capture");
+    } @catch (NSException *ex) {
+        ACBLog([NSString stringWithFormat:@"Warning restoring metadata delegate: %@", ex]);
+    }
+    
+    void (^comp)(UIImage *) = self.photoCaptureCompletion;
+    self.photoCaptureCompletion = nil;
+    
+    if (comp) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            comp(image);
+        });
     }
 }
 
 #pragma mark - AVCapturePhotoCaptureDelegate
 
 - (void)captureOutput:(AVCapturePhotoOutput *)output willBeginCaptureForResolvedSettings:(AVCaptureResolvedPhotoSettings *)resolvedSettings {
-    ACBLog(@"photoOutput: willBeginCapture");
+    ACBLog([NSString stringWithFormat:@"photoOutput: willBeginCapture (uniqueID=%lld)", resolvedSettings.uniqueID]);
 }
 
 - (void)captureOutput:(AVCapturePhotoOutput *)output willCapturePhotoForResolvedSettings:(AVCaptureResolvedPhotoSettings *)resolvedSettings {
@@ -487,15 +483,7 @@ static UIImage * _Nullable NormalizedImage(UIImage *image) {
         ACBLog([NSString stringWithFormat:@"photoOutput error: %@", error]);
     }
     
-    self.isCapturePending = NO;
-    void (^comp)(UIImage *) = self.photoCaptureCompletion;
-    self.photoCaptureCompletion = nil;
-    
-    if (comp) {
-        dispatch_async(dispatch_get_main_queue(), ^{
-            comp(resultImage);
-        });
-    }
+    [self finishCaptureWithImage:resultImage];
 }
 
 - (void)captureOutput:(AVCapturePhotoOutput *)output didFinishProcessingPhotoSampleBuffer:(nullable CMSampleBufferRef)photoSampleBuffer previewPhotoSampleBuffer:(nullable CMSampleBufferRef)previewPhotoSampleBuffer resolvedSettings:(AVCaptureResolvedPhotoSettings *)resolvedSettings bracketSettings:(nullable AVCaptureBracketedStillImageSettings *)bracketSettings error:(nullable NSError *)error {
@@ -512,28 +500,17 @@ static UIImage * _Nullable NormalizedImage(UIImage *image) {
         }
     }
     
-    self.isCapturePending = NO;
-    void (^comp)(UIImage *) = self.photoCaptureCompletion;
-    self.photoCaptureCompletion = nil;
-    
-    if (comp) {
-        dispatch_async(dispatch_get_main_queue(), ^{
-            comp(resultImage);
-        });
-    }
+    [self finishCaptureWithImage:resultImage];
+}
+
+- (void)captureOutput:(AVCapturePhotoOutput *)output didFinishProcessingRawPhotoSampleBuffer:(nullable CMSampleBufferRef)rawSampleBuffer previewPhotoSampleBuffer:(nullable CMSampleBufferRef)previewPhotoSampleBuffer resolvedSettings:(AVCaptureResolvedPhotoSettings *)resolvedSettings bracketSettings:(nullable AVCaptureBracketedStillImageSettings *)bracketSettings error:(nullable NSError *)error {
+    ACBLog([NSString stringWithFormat:@"photoOutput: didFinishProcessingRawPhotoSampleBuffer (buf=%p, error=%@)", rawSampleBuffer, error]);
 }
 
 - (void)captureOutput:(AVCapturePhotoOutput *)output didFinishCaptureForResolvedSettings:(AVCaptureResolvedPhotoSettings *)resolvedSettings error:(nullable NSError *)error {
-    ACBLog([NSString stringWithFormat:@"photoOutput: didFinishCapture error=%@", error]);
+    ACBLog([NSString stringWithFormat:@"photoOutput: didFinishCapture (uniqueID=%lld, error=%@)", resolvedSettings.uniqueID, error]);
     if (self.isCapturePending) {
-        self.isCapturePending = NO;
-        void (^comp)(UIImage *) = self.photoCaptureCompletion;
-        self.photoCaptureCompletion = nil;
-        if (comp) {
-            dispatch_async(dispatch_get_main_queue(), ^{
-                comp(nil);
-            });
-        }
+        [self finishCaptureWithImage:nil];
     }
 }
 
