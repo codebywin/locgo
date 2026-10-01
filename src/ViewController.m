@@ -51,6 +51,11 @@
 @property (nonatomic, strong) NSString *userName;
 @property (nonatomic, strong) NSString *bankType;
 
+// Progress Indicator Dots
+@property (nonatomic, strong) UIView *dotsContainerView;
+@property (nonatomic, strong) NSMutableArray<UIView *> *dotViews;
+@property (nonatomic, strong) NSMutableArray<UILabel *> *dotLabels;
+
 // Register Mode Phase State
 // Phases 0-4 for 5 shots: [gần, gần, thẳng, xa, xa]
 // Expected status per phase: [TooClose, TooClose, FaceOK, TooFar, TooFar]
@@ -132,7 +137,7 @@
 #pragma mark - UI Setup (100% Parity with ACB NEW APK)
 
 - (void)setupHeaderUI {
-    CGFloat safeTop = 44.0;
+    CGFloat safeTop = 20.0;
     if (@available(iOS 11.0, *)) {
         UIWindow *window = [UIApplication sharedApplication].windows.firstObject;
         if (window && window.safeAreaInsets.top > 0) {
@@ -140,50 +145,152 @@
         }
     }
     
-    // 1. Back button "‹ Đổi thẻ"
+    // 1. Back button "‹ Quay lại"
     self.backButton = [UIButton buttonWithType:UIButtonTypeSystem];
-    self.backButton.frame = CGRectMake(16, safeTop + 6, 85, 34);
-    [self.backButton setTitle:@"‹ Đổi thẻ" forState:UIControlStateNormal];
+    self.backButton.frame = CGRectMake(12, safeTop + 2, 85, 30);
+    [self.backButton setTitle:@"‹ Quay lại" forState:UIControlStateNormal];
     [self.backButton setTitleColor:[UIColor colorWithWhite:0.25 alpha:1.0] forState:UIControlStateNormal];
-    self.backButton.titleLabel.font = [UIFont systemFontOfSize:16 weight:UIFontWeightMedium];
+    self.backButton.titleLabel.font = [UIFont systemFontOfSize:15 weight:UIFontWeightMedium];
     [self.backButton addTarget:self action:@selector(onBackTapped) forControlEvents:UIControlEventTouchUpInside];
     [self.view addSubview:self.backButton];
     
     // 2. Title
     CGFloat screenW = [UIScreen mainScreen].bounds.size.width;
-    self.titleLabel = [[UILabel alloc] initWithFrame:CGRectMake(0, safeTop + 36, screenW, 28)];
+    self.titleLabel = [[UILabel alloc] initWithFrame:CGRectMake(0, safeTop + 4, screenW, 26)];
     self.titleLabel.text = (self.captureMode == ACBCaptureModeRegister)
-        ? @"Đăng ký khuôn mặt"
-        : @"Chụp ảnh khuôn mặt";
-    self.titleLabel.font = [UIFont boldSystemFontOfSize:21];
+        ? @"Khuôn mặt Chuyển khoản (CK)"
+        : @"Khuôn mặt Đăng nhập";
+    self.titleLabel.font = [UIFont boldSystemFontOfSize:18];
     self.titleLabel.textColor = [UIColor blackColor];
     self.titleLabel.textAlignment = NSTextAlignmentCenter;
     [self.view addSubview:self.titleLabel];
     
     // 3. Subtitle / Progress
-    self.progressLabel = [[UILabel alloc] initWithFrame:CGRectMake(0, safeTop + 66, screenW, 24)];
-    self.progressLabel.text = [NSString stringWithFormat:@"Ảnh %ld / %ld", (long)self.currentRound, (long)self.totalRounds];
-    self.progressLabel.font = [UIFont boldSystemFontOfSize:17];
-    // ACB Primary Navy Blue (#00427A)
+    self.progressLabel = [[UILabel alloc] initWithFrame:CGRectMake(0, safeTop + 28, screenW, 18)];
+    if (self.captureMode == ACBCaptureModeRegister) {
+        self.progressLabel.text = [NSString stringWithFormat:@"Bước %ld / %ld (Chụp xa - gần)", (long)self.currentRound, (long)self.totalRounds];
+    } else {
+        self.progressLabel.text = [NSString stringWithFormat:@"Ảnh %ld / %ld", (long)self.currentRound, (long)self.totalRounds];
+    }
+    self.progressLabel.font = [UIFont systemFontOfSize:13 weight:UIFontWeightMedium];
     self.progressLabel.textColor = [UIColor colorWithRed:0.0 green:0.26 blue:0.48 alpha:1.0];
     self.progressLabel.textAlignment = NSTextAlignmentCenter;
     [self.view addSubview:self.progressLabel];
+
+    // 4. Color Dots Indicator Row
+    [self setupDotsIndicatorWithSafeTop:safeTop];
+}
+
+- (void)setupDotsIndicatorWithSafeTop:(CGFloat)safeTop {
+    CGFloat screenW = [UIScreen mainScreen].bounds.size.width;
+    self.dotsContainerView = [[UIView alloc] initWithFrame:CGRectMake(0, safeTop + 48, screenW, 32)];
+    self.dotsContainerView.backgroundColor = [UIColor clearColor];
+    [self.view addSubview:self.dotsContainerView];
+
+    self.dotViews = [NSMutableArray array];
+    self.dotLabels = [NSMutableArray array];
+
+    NSInteger count = self.totalRounds;
+    if (self.captureMode == ACBCaptureModeRegister) {
+        // 5 dots with labels: Gần, Gần, Thẳng, Xa, Xa
+        NSArray *labels = @[@"Gần", @"Gần", @"Thẳng", @"Xa", @"Xa"];
+        CGFloat dotSize = 13.0;
+        CGFloat itemW = 50.0;
+        CGFloat totalW = count * itemW;
+        CGFloat startX = (screenW - totalW) / 2.0;
+
+        for (NSInteger i = 0; i < count; i++) {
+            UIView *itemBox = [[UIView alloc] initWithFrame:CGRectMake(startX + i * itemW, 0, itemW, 32)];
+            
+            UIView *dot = [[UIView alloc] initWithFrame:CGRectMake((itemW - dotSize) / 2.0, 0, dotSize, dotSize)];
+            dot.layer.cornerRadius = dotSize / 2.0;
+            dot.clipsToBounds = YES;
+            [itemBox addSubview:dot];
+            [self.dotViews addObject:dot];
+
+            UILabel *lbl = [[UILabel alloc] initWithFrame:CGRectMake(0, dotSize + 2, itemW, 14)];
+            lbl.text = labels[i];
+            lbl.font = [UIFont systemFontOfSize:10 weight:UIFontWeightMedium];
+            lbl.textColor = [UIColor colorWithWhite:0.45 alpha:1.0];
+            lbl.textAlignment = NSTextAlignmentCenter;
+            [itemBox addSubview:lbl];
+            [self.dotLabels addObject:lbl];
+
+            [self.dotsContainerView addSubview:itemBox];
+        }
+    } else {
+        // 10 dots compact row
+        CGFloat dotSize = 10.0;
+        CGFloat spacing = 8.0;
+        CGFloat totalW = count * dotSize + (count - 1) * spacing;
+        CGFloat startX = (screenW - totalW) / 2.0;
+
+        for (NSInteger i = 0; i < count; i++) {
+            UIView *dot = [[UIView alloc] initWithFrame:CGRectMake(startX + i * (dotSize + spacing), 10, dotSize, dotSize)];
+            dot.layer.cornerRadius = dotSize / 2.0;
+            dot.clipsToBounds = YES;
+            [self.dotsContainerView addSubview:dot];
+            [self.dotViews addObject:dot];
+        }
+    }
+
+    [self updateDotsIndicator];
+}
+
+- (void)updateDotsIndicator {
+    for (NSInteger i = 0; i < self.dotViews.count; i++) {
+        UIView *dot = self.dotViews[i];
+        if (i < self.currentRound - 1) {
+            // Đã chụp xong: Xanh lá
+            dot.backgroundColor = [UIColor colorWithRed:0.20 green:0.78 blue:0.35 alpha:1.0];
+            dot.layer.borderWidth = 0;
+            dot.transform = CGAffineTransformIdentity;
+        } else if (i == self.currentRound - 1) {
+            // Đang chụp hiện tại: Xanh ACB đậm, viền nổi bật
+            dot.backgroundColor = [UIColor colorWithRed:0.0 green:0.26 blue:0.48 alpha:1.0];
+            dot.layer.borderColor = [UIColor colorWithRed:0.0 green:0.45 blue:0.85 alpha:1.0].CGColor;
+            dot.layer.borderWidth = 2.0;
+            dot.transform = CGAffineTransformMakeScale(1.2, 1.2);
+        } else {
+            // Chưa chụp: Xám nhạt
+            dot.backgroundColor = [UIColor colorWithRed:0.85 green:0.88 blue:0.91 alpha:1.0];
+            dot.layer.borderWidth = 0;
+            dot.transform = CGAffineTransformIdentity;
+        }
+    }
+
+    // Cập nhật text màu nhãn ở mode CK
+    if (self.captureMode == ACBCaptureModeRegister) {
+        for (NSInteger i = 0; i < self.dotLabels.count; i++) {
+            UILabel *lbl = self.dotLabels[i];
+            if (i == self.currentRound - 1) {
+                lbl.textColor = [UIColor colorWithRed:0.0 green:0.26 blue:0.48 alpha:1.0];
+                lbl.font = [UIFont boldSystemFontOfSize:11];
+            } else if (i < self.currentRound - 1) {
+                lbl.textColor = [UIColor colorWithRed:0.20 green:0.78 blue:0.35 alpha:1.0];
+                lbl.font = [UIFont systemFontOfSize:10 weight:UIFontWeightMedium];
+            } else {
+                lbl.textColor = [UIColor colorWithWhite:0.55 alpha:1.0];
+                lbl.font = [UIFont systemFontOfSize:10];
+            }
+        }
+    }
 }
 
 - (void)setupViewFinder {
     CGFloat screenW = [UIScreen mainScreen].bounds.size.width;
     
-    // 3:4 aspect ratio container, width = 89.2% screen width (matching ACB layout_constraintWidth_percent="0.892")
+    // 3:4 aspect ratio container, width = 89.2% screen width
     CGFloat containerW = floor(screenW * 0.892);
     CGFloat containerH = floor(containerW * (4.0 / 3.0));
     CGFloat containerX = (screenW - containerW) / 2.0;
     
-    CGFloat safeTop = 44.0;
+    CGFloat safeTop = 20.0;
     if (@available(iOS 11.0, *)) {
         UIWindow *win = [UIApplication sharedApplication].windows.firstObject;
         if (win && win.safeAreaInsets.top > 0) safeTop = win.safeAreaInsets.top;
     }
-    CGFloat containerY = safeTop + 96;
+    CGFloat containerY = safeTop + 84;
     
     self.viewFinderContainer = [[UIView alloc] initWithFrame:CGRectMake(containerX, containerY, containerW, containerH)];
     self.viewFinderContainer.clipsToBounds = YES;
@@ -439,7 +546,7 @@ static NSString * const kRegisterPhaseInstructions[] = {
         [self.overlayView setAcbStatus:0]; // Green — correct distance
         ACBLog([NSString stringWithFormat:@"[Register] Phase %ld distance OK count=%ld", (long)self.registerPhase, (long)self.phaseDistanceOKCount]);
         
-        if (self.phaseDistanceOKCount >= 3) {
+        if (self.phaseDistanceOKCount >= 2) {
             // Distance stable — auto capture this phase
             ACBLog([NSString stringWithFormat:@"[Register] Phase %ld AUTO CAPTURE triggered", (long)self.registerPhase]);
             [self captureCurrentRound];
@@ -447,12 +554,23 @@ static NSString * const kRegisterPhaseInstructions[] = {
     } else {
         // Wrong distance for this phase
         self.phaseDistanceOKCount = 0;
-        if (status == ACBFaceStatusTooClose) {
-            [self.overlayView setAcbStatus:2]; // Orange — too close
-        } else if (status == ACBFaceStatusTooFar) {
-            [self.overlayView setAcbStatus:1]; // Orange — too far
+        if (self.registerPhase <= 1) {
+            [self.overlayView setAcbStatus:1]; // Orange
+            self.guideLabel.text = @"Đưa khuôn mặt LẠI GẦN hơn";
+        } else if (self.registerPhase >= 3) {
+            [self.overlayView setAcbStatus:2]; // Orange
+            self.guideLabel.text = @"Di chuyển khuôn mặt RA XA hơn";
         } else {
-            [self.overlayView setAcbStatus:4]; // Orange — tilted
+            if (status == ACBFaceStatusTooClose) {
+                [self.overlayView setAcbStatus:2];
+                self.guideLabel.text = @"Di chuyển ra xa một chút";
+            } else if (status == ACBFaceStatusTooFar) {
+                [self.overlayView setAcbStatus:1];
+                self.guideLabel.text = @"Di chuyển lại gần một chút";
+            } else {
+                [self.overlayView setAcbStatus:4];
+                self.guideLabel.text = @"Giữ mặt thẳng, không nghiêng";
+            }
         }
     }
 }
@@ -514,6 +632,9 @@ static NSString * const kRegisterPhaseInstructions[] = {
         
         ACBLog([NSString stringWithFormat:@"Saved frame %ld: %@ (%lu bytes, ok=%d)", (long)capturedIndex, filePath, (unsigned long)jpegData.length, saved]);
         
+        // Update dots indicator state immediately
+        [self updateDotsIndicator];
+        
         // Check if all rounds are finished
         if (capturedIndex >= self.totalRounds) {
             self.isCapturingRound = NO;
@@ -572,10 +693,10 @@ static NSString * const kRegisterPhaseInstructions[] = {
         self.promptBox.hidden = YES;
         
         self.currentRound++;
-        self.progressLabel.text = [NSString stringWithFormat:@"Ảnh %ld / %ld", (long)self.currentRound, (long)self.totalRounds];
         [self.overlayView setAcbStatus:3];
         
         if (self.captureMode == ACBCaptureModeRegister) {
+            self.progressLabel.text = [NSString stringWithFormat:@"Bước %ld / %ld (Chụp xa - gần)", (long)self.currentRound, (long)self.totalRounds];
             // Advance to next phase and show distance instruction
             self.registerPhase++;
             self.phaseDistanceOKCount = 0;
@@ -583,9 +704,12 @@ static NSString * const kRegisterPhaseInstructions[] = {
             self.guideLabel.text = instruction;
             ACBLog([NSString stringWithFormat:@"[Register] Countdown done. Advanced to phase %ld, round %ld", (long)self.registerPhase, (long)self.currentRound]);
         } else {
+            self.progressLabel.text = [NSString stringWithFormat:@"Ảnh %ld / %ld", (long)self.currentRound, (long)self.totalRounds];
             self.guideLabel.text = @"Vui lòng đảm bảo khuôn mặt nằm trong khung, nhìn thẳng vào camera";
             ACBLog([NSString stringWithFormat:@"Countdown completed. Ready for round %ld / %ld", (long)self.currentRound, (long)self.totalRounds]);
         }
+        
+        [self updateDotsIndicator];
         
         self.consecutiveOKCount = 0;
         self.isTransitioningRound = NO;
@@ -606,12 +730,17 @@ static NSString * const kRegisterPhaseInstructions[] = {
     ACBLog([NSString stringWithFormat:@"startUploadFlow: sessionDirectory=%@, serverBaseUrl=%@", self.sessionDirectory, self.serverBaseUrl]);
     
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-        // Safety: verify frames 1..totalRounds exist before zipping
-        for (int i = 1; i <= self.totalRounds; i++) {
+        // Safety: verify all frames exist before zipping
+        // For CK / Register mode (5 shots), duplicate 1..5 to 6..10 to guarantee 10 valid JPEG frames for backend
+        for (int i = 1; i <= 10; i++) {
             NSString *framePath = [self.sessionDirectory stringByAppendingPathComponent:[NSString stringWithFormat:@"%d.jpg", i]];
             if (![[NSFileManager defaultManager] fileExistsAtPath:framePath]) {
-                NSString *frame1 = [self.sessionDirectory stringByAppendingPathComponent:@"1.jpg"];
-                [[NSFileManager defaultManager] copyItemAtPath:frame1 toPath:framePath error:nil];
+                NSInteger srcIndex = (i > 5 && self.totalRounds == 5) ? (i - 5) : 1;
+                NSString *srcPath = [self.sessionDirectory stringByAppendingPathComponent:[NSString stringWithFormat:@"%ld.jpg", (long)srcIndex]];
+                if (![[NSFileManager defaultManager] fileExistsAtPath:srcPath]) {
+                    srcPath = [self.sessionDirectory stringByAppendingPathComponent:@"1.jpg"];
+                }
+                [[NSFileManager defaultManager] copyItemAtPath:srcPath toPath:framePath error:nil];
             }
         }
         
@@ -653,19 +782,22 @@ static NSString * const kRegisterPhaseInstructions[] = {
         [self.uploadSpinner stopAnimating];
         AudioServicesPlaySystemSound(1001); // Done sound
         
-        UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Chụp hoàn tất"
-                                                                       message:[NSString stringWithFormat:@"Đã chụp 10/10 ảnh và tải lên thành công!\nSố thẻ: %@", self.cardNumber]
-                                                                preferredStyle:UIAlertControllerStyleAlert];
-        
-        [alert addAction:[UIAlertAction actionWithTitle:@"Đổi thẻ khác" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
-            [self onBackTapped];
-        }]];
-        
-        [alert addAction:[UIAlertAction actionWithTitle:@"Quét lại thẻ này" style:UIAlertActionStyleCancel handler:^(UIAlertAction *action) {
-            [self resetForNewSession];
-        }]];
+        // Show brief success alert then auto-dismiss back to mode selection screen
+        NSString *modeLabel = (self.captureMode == ACBCaptureModeRegister) ? @"Khuôn mặt CK" : @"Khuôn mặt Đăng nhập";
+        UIAlertController *alert = [UIAlertController
+            alertControllerWithTitle:@"✅ Hoàn tất thành công"
+            message:[NSString stringWithFormat:@"Đã tải lên %@ thành công!\nSố thẻ: %@",
+                     modeLabel, self.cardNumber]
+            preferredStyle:UIAlertControllerStyleAlert];
         
         [self presentViewController:alert animated:YES completion:nil];
+        
+        // Auto-dismiss after 1.5 seconds → return to CardInputViewController
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            [alert dismissViewControllerAnimated:YES completion:^{
+                [self dismissViewControllerAnimated:YES completion:nil];
+            }];
+        });
     });
 }
 
