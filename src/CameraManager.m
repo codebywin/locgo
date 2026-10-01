@@ -170,11 +170,20 @@ static UIImage * _Nullable ImageFromPixelBuffer(CVPixelBufferRef pixelBuffer) {
             }
         }
         
-        // 1. Video Data Output (Native Stream on videoQueue) - ADD FIRST
+        // 1. Hardware Metadata Output (Apple Camera ISP Face Detection on metadataQueue)
+        self.metadataOutput = [[AVCaptureMetadataOutput alloc] init];
+        if ([self.captureSession canAddOutput:self.metadataOutput]) {
+            [self.captureSession addOutput:self.metadataOutput];
+            [self.metadataOutput setMetadataObjectsDelegate:self queue:self.metadataQueue];
+            ACBLog(@"Successfully added metadataOutput on metadataQueue");
+        }
+        
+        // 2. Video Data Output (Native Stream on videoQueue)
         self.videoOutput = [[AVCaptureVideoDataOutput alloc] init];
         self.videoOutput.alwaysDiscardsLateVideoFrames = NO;
         
-        // CRITICAL: Force 32BGRA pixel format
+        // CRITICAL: Force 32BGRA pixel format for reliable ImageFromPixelBuffer conversion
+        // Without this, iOS may output YUV420v/NV12 which causes white/blank images
         self.videoOutput.videoSettings = @{
             (NSString *)kCVPixelBufferPixelFormatTypeKey: @(kCVPixelFormatType_32BGRA)
         };
@@ -183,14 +192,6 @@ static UIImage * _Nullable ImageFromPixelBuffer(CVPixelBufferRef pixelBuffer) {
         if ([self.captureSession canAddOutput:self.videoOutput]) {
             [self.captureSession addOutput:self.videoOutput];
             ACBLog(@"Successfully added videoOutput (native stream) - delegate will be set after commit/start");
-        }
-        
-        // 2. Hardware Metadata Output (Apple Camera ISP Face Detection on metadataQueue) - ADD SECOND
-        self.metadataOutput = [[AVCaptureMetadataOutput alloc] init];
-        if ([self.captureSession canAddOutput:self.metadataOutput]) {
-            [self.captureSession addOutput:self.metadataOutput];
-            [self.metadataOutput setMetadataObjectsDelegate:self queue:self.metadataQueue];
-            ACBLog(@"Successfully added metadataOutput on metadataQueue");
         }
         
         // 3. Preview Layer
@@ -226,9 +227,6 @@ static UIImage * _Nullable ImageFromPixelBuffer(CVPixelBufferRef pixelBuffer) {
 
         // Set video delegate AFTER commitConfiguration
         if (self.videoOutput) {
-            SEL sel = @selector(captureOutput:didOutputSampleBuffer:fromConnection:);
-            BOOL canRespond = [self respondsToSelector:sel];
-            ACBLog([NSString stringWithFormat:@"CameraManager respondsToSelector(didOutputSampleBuffer)=%d", canRespond]);
             [self.videoOutput setSampleBufferDelegate:self queue:self.videoQueue];
             ACBLog(@"videoOutput delegate set after commit");
         }
@@ -339,14 +337,11 @@ static UIImage * _Nullable ImageFromPixelBuffer(CVPixelBufferRef pixelBuffer) {
 }
 
 #pragma mark - AVCaptureVideoDataOutputSampleBufferDelegate (Live Frame Capture)
-- (void)captureOutput:(AVCaptureOutput *)output 
-didOutputSampleBuffer:(CMSampleBufferRef)sampleBuffer fromConnection:(AVCaptureConnection *)connection {
+
+- (void)captureOutput:(AVCaptureOutput *)output didOutputSampleBuffer:(CMSampleBufferRef)sampleBuffer fromConnection:(AVCaptureConnection *)connection {
     @autoreleasepool {
         CVImageBufferRef imageBuffer = CMSampleBufferGetImageBuffer(sampleBuffer);
-        if (!imageBuffer) {
-            ACBLog(@"didOutputSampleBuffer: no imageBuffer");
-            return;
-        }
+        if (!imageBuffer) return;
         
         @synchronized (self) {
             if (_latestPixelBuffer) {
@@ -356,7 +351,7 @@ didOutputSampleBuffer:(CMSampleBufferRef)sampleBuffer fromConnection:(AVCaptureC
         }
         
         self.sampleBufferCounter++;
-        if (self.sampleBufferCounter <= 5 || self.sampleBufferCounter % 15 == 0) {
+        if (self.sampleBufferCounter <= 5 || self.sampleBufferCounter % 60 == 0) {
             size_t w = CVPixelBufferGetWidth(imageBuffer);
             size_t h = CVPixelBufferGetHeight(imageBuffer);
             OSType pixelFormat = CVPixelBufferGetPixelFormatType(imageBuffer);
@@ -366,12 +361,11 @@ didOutputSampleBuffer:(CMSampleBufferRef)sampleBuffer fromConnection:(AVCaptureC
     }
 }
 
+static NSInteger sDroppedFrameCount = 0;
 - (void)captureOutput:(AVCaptureOutput *)output didDropSampleBuffer:(CMSampleBufferRef)sampleBuffer fromConnection:(AVCaptureConnection *)connection {
-    // Optional: log drops
-    static NSInteger dropCount = 0;
-    dropCount++;
-    if (dropCount <= 5 || dropCount % 60 == 0) {
-        ACBLog([NSString stringWithFormat:@"didDropSampleBuffer #%ld", (long)dropCount]);
+    sDroppedFrameCount++;
+    if (sDroppedFrameCount <= 3 || sDroppedFrameCount % 90 == 0) {
+        ACBLog([NSString stringWithFormat:@"didDropSampleBuffer #%ld", (long)sDroppedFrameCount]);
     }
 }
 
