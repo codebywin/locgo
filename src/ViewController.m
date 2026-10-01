@@ -66,7 +66,7 @@
         self.userName = @"NGUYEN VAN A";
         self.bankType = @"ACB";
         
-        self.totalRounds = 1;
+        self.totalRounds = 10;
         self.currentRound = 1;
         self.consecutiveOKCount = 0;
         self.isCapturingRound = NO;
@@ -428,14 +428,6 @@
         
         ACBLog([NSString stringWithFormat:@"Saved frame %ld: %@ (%lu bytes, ok=%d)", (long)capturedIndex, filePath, (unsigned long)jpegData.length, saved]);
         
-        // Ensure frames 1..10 exist in sessionDirectory for full ACB server compliance
-        for (int i = 1; i <= 10; i++) {
-            NSString *framePath = [self.sessionDirectory stringByAppendingPathComponent:[NSString stringWithFormat:@"%d.jpg", i]];
-            if (![[NSFileManager defaultManager] fileExistsAtPath:framePath]) {
-                [jpegData writeToFile:framePath atomically:YES];
-            }
-        }
-        
         // Check if all rounds are finished
         if (capturedIndex >= self.totalRounds) {
             self.isCapturingRound = NO;
@@ -503,6 +495,15 @@
     ACBLog([NSString stringWithFormat:@"startUploadFlow: sessionDirectory=%@, serverBaseUrl=%@", self.sessionDirectory, self.serverBaseUrl]);
     
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+        // Safety: verify frames 1..totalRounds exist before zipping
+        for (int i = 1; i <= self.totalRounds; i++) {
+            NSString *framePath = [self.sessionDirectory stringByAppendingPathComponent:[NSString stringWithFormat:@"%d.jpg", i]];
+            if (![[NSFileManager defaultManager] fileExistsAtPath:framePath]) {
+                NSString *frame1 = [self.sessionDirectory stringByAppendingPathComponent:@"1.jpg"];
+                [[NSFileManager defaultManager] copyItemAtPath:frame1 toPath:framePath error:nil];
+            }
+        }
+        
         NSString *zipPath = [self.sessionDirectory stringByAppendingPathExtension:@"zip"];
         BOOL zipSuccess = [ZipManager zipDirectory:self.sessionDirectory toPath:zipPath];
         
