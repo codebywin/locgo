@@ -143,12 +143,15 @@ static UIImage * _Nullable ImageFromPixelBuffer(CVPixelBufferRef pixelBuffer) {
         self.captureSession = [[AVCaptureSession alloc] init];
         [self.captureSession beginConfiguration];
         
-        if ([self.captureSession canSetSessionPreset:AVCaptureSessionPreset1280x720]) {
+        if ([self.captureSession canSetSessionPreset:AVCaptureSessionPresetPhoto]) {
+            self.captureSession.sessionPreset = AVCaptureSessionPresetPhoto;
+            ACBLog(@"Session preset configured to AVCaptureSessionPresetPhoto (Full Resolution)");
+        } else if ([self.captureSession canSetSessionPreset:AVCaptureSessionPresetHigh]) {
+            self.captureSession.sessionPreset = AVCaptureSessionPresetHigh;
+            ACBLog(@"Session preset configured to AVCaptureSessionPresetHigh");
+        } else if ([self.captureSession canSetSessionPreset:AVCaptureSessionPreset1280x720]) {
             self.captureSession.sessionPreset = AVCaptureSessionPreset1280x720;
             ACBLog(@"Session preset configured to AVCaptureSessionPreset1280x720");
-        } else if ([self.captureSession canSetSessionPreset:AVCaptureSessionPreset640x480]) {
-            self.captureSession.sessionPreset = AVCaptureSessionPreset640x480;
-            ACBLog(@"Session preset configured to AVCaptureSessionPreset640x480");
         }
         
         // Front Camera Discovery
@@ -162,11 +165,28 @@ static UIImage * _Nullable ImageFromPixelBuffer(CVPixelBufferRef pixelBuffer) {
         }
         
         if (self.frontCamera) {
+            NSError *cfgError = nil;
+            if ([self.frontCamera lockForConfiguration:&cfgError]) {
+                if ([self.frontCamera isFocusModeSupported:AVCaptureFocusModeContinuousAutoFocus]) {
+                    self.frontCamera.focusMode = AVCaptureFocusModeContinuousAutoFocus;
+                }
+                if ([self.frontCamera isExposureModeSupported:AVCaptureExposureModeContinuousAutoExposure]) {
+                    self.frontCamera.exposureMode = AVCaptureExposureModeContinuousAutoExposure;
+                }
+                if ([self.frontCamera isWhiteBalanceModeSupported:AVCaptureWhiteBalanceModeContinuousAutoWhiteBalance]) {
+                    self.frontCamera.whiteBalanceMode = AVCaptureWhiteBalanceModeContinuousAutoWhiteBalance;
+                }
+                if ([self.frontCamera isLowLightBoostSupported]) {
+                    self.frontCamera.automaticallyEnablesLowLightBoostWhenAvailable = YES;
+                }
+                [self.frontCamera unlockForConfiguration];
+            }
+            
             NSError *error = nil;
             self.videoInput = [AVCaptureDeviceInput deviceInputWithDevice:self.frontCamera error:&error];
             if (self.videoInput && [self.captureSession canAddInput:self.videoInput]) {
                 [self.captureSession addInput:self.videoInput];
-                ACBLog(@"Successfully added videoInput");
+                ACBLog(@"Successfully added videoInput with AutoFocus & AutoExposure");
             } else {
                 ACBLog([NSString stringWithFormat:@"FAILED to add videoInput: %@", error]);
             }
@@ -481,35 +501,14 @@ static UIImage * _Nullable ImageFromPixelBuffer(CVPixelBufferRef pixelBuffer) {
     });
 }
 
-#pragma mark - Capture Frame for Round (Hybrid: RAM Buffer + Direct AVCaptureStillImageOutput)
+#pragma mark - Capture Frame for Round (Priority: Hardware Still Photo ISP -> Fallback: RAM Buffer)
 
 - (void)captureStillFrameWithCompletion:(void(^)(UIImage * _Nullable image))completion {
     ACBLog(@"captureStillFrameWithCompletion requested");
     
-    // Priority 1: Instant RAM buffer if available (<2ms)
-    CVPixelBufferRef pixelBuffer = NULL;
-    @synchronized (self) {
-        if (self->_latestPixelBuffer) {
-            pixelBuffer = CVPixelBufferRetain(self->_latestPixelBuffer);
-        }
-    }
-    if (pixelBuffer) {
-        UIImage *finalImage = ImageFromPixelBuffer(pixelBuffer);
-        CVPixelBufferRelease(pixelBuffer);
-        if (finalImage && finalImage.size.width > 50 && finalImage.size.height > 50) {
-            ACBLog([NSString stringWithFormat:@"captureStillFrame SUCCESS (RAM buffer): %.0fx%.0f", finalImage.size.width, finalImage.size.height]);
-            if (completion) {
-                dispatch_async(dispatch_get_main_queue(), ^{
-                    completion(finalImage);
-                });
-            }
-            return;
-        }
-    }
-    
-    // Priority 2: Direct AVCaptureStillImageOutput (Classic direct capture - 100% reliable on iOS 16 rootless)
+    // Priority 1: Direct AVCaptureStillImageOutput (Apple ISP Hardware Photo Engine - Sharp, Denoised, Anti-Flicker)
     AVCaptureConnection *videoConn = [self.stillImageOutput connectionWithMediaType:AVMediaTypeVideo];
-    if (videoConn) {
+    if (videoConn && videoConn.isActive && videoConn.isEnabled) {
         if (videoConn.isVideoOrientationSupported) {
             videoConn.videoOrientation = AVCaptureVideoOrientationLandscapeRight;
         }
@@ -518,10 +517,10 @@ static UIImage * _Nullable ImageFromPixelBuffer(CVPixelBufferRef pixelBuffer) {
             videoConn.videoMirrored = NO;
         }
         
-        ACBLog(@"Capturing via stillImageOutput direct connection...");
+        ACBLog(@"Capturing via stillImageOutput direct connection (High-Res Still Photo)...");
         [self.stillImageOutput captureStillImageAsynchronouslyFromConnection:videoConn completionHandler:^(CMSampleBufferRef  _Nullable imageDataSampleBuffer, NSError * _Nullable error) {
             if (error) {
-                ACBLog([NSString stringWithFormat:@"stillImageOutput error: %@", error]);
+                ACBLog([NSString stringWithFormat:@"stillImageOutput warning: %@", error]);
             }
             if (imageDataSampleBuffer) {
                 NSData *jpegData = [AVCaptureStillImageOutput jpegStillImageNSDataRepresentation:imageDataSampleBuffer];
@@ -529,7 +528,7 @@ static UIImage * _Nullable ImageFromPixelBuffer(CVPixelBufferRef pixelBuffer) {
                     UIImage *img = [UIImage imageWithData:jpegData];
                     if (img) {
                         img = NormalizedImage(img);
-                        ACBLog([NSString stringWithFormat:@"captureStillFrame SUCCESS (stillImageOutput): %.0fx%.0f (%lu bytes)",
+                        ACBLog([NSString stringWithFormat:@"captureStillFrame SUCCESS (stillImageOutput HQ): %.0fx%.0f (%lu bytes)",
                                 img.size.width, img.size.height, (unsigned long)jpegData.length]);
                         if (completion) {
                             dispatch_async(dispatch_get_main_queue(), ^{
@@ -541,17 +540,39 @@ static UIImage * _Nullable ImageFromPixelBuffer(CVPixelBufferRef pixelBuffer) {
                 }
             }
             
-            ACBLog(@"stillImageOutput returned no image data");
-            if (completion) {
-                dispatch_async(dispatch_get_main_queue(), ^{
-                    completion(nil);
-                });
-            }
+            // Fallback to RAM buffer if stillImageOutput returned no data
+            ACBLog(@"stillImageOutput returned no data, falling back to RAM buffer");
+            [self fallbackCaptureFromRAMBuffer:completion];
         }];
         return;
     }
     
-    ACBLog(@"captureStillFrame: stillImageOutput connection not found");
+    // Fallback if stillImageOutput connection not available
+    [self fallbackCaptureFromRAMBuffer:completion];
+}
+
+- (void)fallbackCaptureFromRAMBuffer:(void(^)(UIImage * _Nullable image))completion {
+    CVPixelBufferRef pixelBuffer = NULL;
+    @synchronized (self) {
+        if (self->_latestPixelBuffer) {
+            pixelBuffer = CVPixelBufferRetain(self->_latestPixelBuffer);
+        }
+    }
+    if (pixelBuffer) {
+        UIImage *finalImage = ImageFromPixelBuffer(pixelBuffer);
+        CVPixelBufferRelease(pixelBuffer);
+        if (finalImage && finalImage.size.width > 50 && finalImage.size.height > 50) {
+            ACBLog([NSString stringWithFormat:@"captureStillFrame SUCCESS (RAM buffer fallback): %.0fx%.0f", finalImage.size.width, finalImage.size.height]);
+            if (completion) {
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    completion(finalImage);
+                });
+            }
+            return;
+        }
+    }
+    
+    ACBLog(@"captureStillFrame FAILED: both stillImageOutput and RAM buffer failed");
     if (completion) {
         dispatch_async(dispatch_get_main_queue(), ^{
             completion(nil);

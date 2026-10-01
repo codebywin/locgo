@@ -658,8 +658,8 @@ static NSString * const kRegisterPhaseInstructions[] = {
                 [self startUploadFlow];
                 return;
             } else {
-                // Tiếp tục chụp frame kế tiếp trong cùng stage với delay 0.20s
-                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.20 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                // Tiếp tục chụp frame kế tiếp trong cùng stage với delay 0.30s (để ISP ổn định chống rung)
+                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.30 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
                     self.currentRound++;
                     if (self.currentRound <= 10) {
                         self.progressLabel.text = [NSString stringWithFormat:@"Ảnh xa: %ld / 10", (long)self.currentRound];
@@ -686,8 +686,8 @@ static NSString * const kRegisterPhaseInstructions[] = {
                 return;
             }
             
-            // Chụp liên tục nhanh 10 ảnh với delay 0.25s
-            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            // Chụp liên tục 10 ảnh với delay 0.30s (để ISP ổn định chống rung)
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.30 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
                 self.currentRound++;
                 self.progressLabel.text = [NSString stringWithFormat:@"Ảnh %ld / %ld", (long)self.currentRound, (long)self.totalRounds];
                 [self updateDotsIndicator];
