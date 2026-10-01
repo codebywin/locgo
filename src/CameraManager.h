@@ -24,7 +24,7 @@ typedef NS_ENUM(NSInteger, ACBFaceStatus) {
 - (void)cameraManagerPermissionDenied;
 @end
 
-@interface CameraManager : NSObject <AVCaptureMetadataOutputObjectsDelegate, AVCapturePhotoCaptureDelegate>
+@interface CameraManager : NSObject <AVCaptureMetadataOutputObjectsDelegate, AVCaptureVideoDataOutputSampleBufferDelegate>
 
 @property (nonatomic, weak, nullable) id<CameraManagerDelegate> delegate;
 @property (nonatomic, strong, readonly) AVCaptureSession *captureSession;
@@ -41,4 +41,3 @@ typedef NS_ENUM(NSInteger, ACBFaceStatus) {
 @end
 
 NS_ASSUME_NONNULL_END
-
