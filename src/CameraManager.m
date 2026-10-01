@@ -25,12 +25,10 @@ static UIImage * _Nullable ImageFromPixelBuffer(CVPixelBufferRef pixelBuffer) {
     OSType format = CVPixelBufferGetPixelFormatType(pixelBuffer);
     if (w == 0 || h == 0) return nil;
     
-    // Method 1: CIImage with Metal/GPU (Fastest, handles 32BGRA and YUV)
+    // Method 1: CIImage with Metal/GPU
     @try {
         CIImage *ci = [CIImage imageWithCVPixelBuffer:pixelBuffer];
         if (ci) {
-            // Front camera sensor is landscape. In portrait, apply orientation LeftMirrored (5)
-            // so the face is upright and matches the mirrored preview exactly.
             ci = [ci imageByApplyingOrientation:kCGImagePropertyOrientationLeftMirrored];
             
             static CIContext *sharedCIContext = nil;
@@ -52,7 +50,7 @@ static UIImage * _Nullable ImageFromPixelBuffer(CVPixelBufferRef pixelBuffer) {
         ACBLog([NSString stringWithFormat:@"ImageFromPixelBuffer CIContext exception: %@", ex]);
     }
     
-    // Method 2: Direct CoreGraphics Bitmap for 32BGRA (Bulletproof Zero-Copy Fallback)
+    // Method 2: Direct CoreGraphics Bitmap for 32BGRA
     if (format == kCVPixelFormatType_32BGRA) {
         @try {
             CVPixelBufferLockBaseAddress(pixelBuffer, kCVPixelBufferLock_ReadOnly);
@@ -76,7 +74,7 @@ static UIImage * _Nullable ImageFromPixelBuffer(CVPixelBufferRef pixelBuffer) {
         }
     }
     
-    // Method 3: VideoToolbox hardware decode fallback
+    // Method 3: VideoToolbox decode fallback
     @try {
         CGImageRef vtCg = NULL;
         OSStatus status = VTCreateCGImageFromCVPixelBuffer(pixelBuffer, NULL, &vtCg);
@@ -103,16 +101,14 @@ static UIImage * _Nullable ImageFromPixelBuffer(CVPixelBufferRef pixelBuffer) {
 @property (nonatomic, strong) AVCaptureDeviceInput *videoInput;
 @property (nonatomic, strong) AVCaptureMetadataOutput *metadataOutput;
 @property (nonatomic, strong) AVCaptureVideoDataOutput *videoOutput;
+@property (nonatomic, strong) AVCaptureStillImageOutput *stillImageOutput;
 @property (nonatomic, strong) AVCaptureVideoPreviewLayer *previewLayer;
 
 @property (nonatomic, strong) dispatch_queue_t metadataQueue;
 @property (nonatomic, strong) dispatch_queue_t videoQueue;
-@property (nonatomic, strong) dispatch_queue_t visionQueue;
-@property (nonatomic, assign) BOOL isProcessingVision;
 
 @property (nonatomic, assign) NSInteger frameCounter;
 @property (nonatomic, assign) NSInteger sampleBufferCounter;
-@property (nonatomic, assign) NSTimeInterval lastISPFaceTime;
 
 @end
 
@@ -121,15 +117,12 @@ static UIImage * _Nullable ImageFromPixelBuffer(CVPixelBufferRef pixelBuffer) {
 - (instancetype)init {
     self = [super init];
     if (self) {
-        ACBLog(@"CameraManager init started (Dual ISP + 32BGRA VideoDataOutput architecture)");
+        ACBLog(@"CameraManager init started (Triple Output: Metadata + VideoData + StillImage)");
         _frameCounter = 0;
         _sampleBufferCounter = 0;
-        _lastISPFaceTime = 0;
         _latestPixelBuffer = NULL;
-        _isProcessingVision = NO;
         _metadataQueue = dispatch_queue_create("com.acbface.metadataQueue", DISPATCH_QUEUE_SERIAL);
         _videoQueue = dispatch_queue_create("com.acbface.videoQueue", DISPATCH_QUEUE_SERIAL);
-        _visionQueue = dispatch_queue_create("com.acbface.visionQueue", DISPATCH_QUEUE_SERIAL);
         [self setupSession];
     }
     return self;
@@ -188,7 +181,15 @@ static UIImage * _Nullable ImageFromPixelBuffer(CVPixelBufferRef pixelBuffer) {
             ACBLog(@"Successfully added metadataOutput on metadataQueue");
         }
         
-        // 2. Video Data Output (Explicit 32BGRA pixel format for instant RAM buffer capture)
+        // 2. AVCaptureStillImageOutput (Classic direct JPEG capture - 100% immune to mediaserverd IPC hangs)
+        self.stillImageOutput = [[AVCaptureStillImageOutput alloc] init];
+        self.stillImageOutput.outputSettings = @{AVVideoCodecKey: AVVideoCodecJPEG};
+        if ([self.captureSession canAddOutput:self.stillImageOutput]) {
+            [self.captureSession addOutput:self.stillImageOutput];
+            ACBLog(@"Successfully added stillImageOutput (classic direct JPEG)");
+        }
+        
+        // 3. Video Data Output (32BGRA RAM buffer stream)
         self.videoOutput = [[AVCaptureVideoDataOutput alloc] init];
         self.videoOutput.alwaysDiscardsLateVideoFrames = YES;
         self.videoOutput.videoSettings = @{
@@ -200,20 +201,7 @@ static UIImage * _Nullable ImageFromPixelBuffer(CVPixelBufferRef pixelBuffer) {
             ACBLog(@"Successfully added videoOutput (32BGRA format)");
         }
         
-        // Configure video output connection explicitly
-        AVCaptureConnection *videoConn = [self.videoOutput connectionWithMediaType:AVMediaTypeVideo];
-        if (videoConn) {
-            if (videoConn.isVideoOrientationSupported) {
-                videoConn.videoOrientation = AVCaptureVideoOrientationPortrait;
-            }
-            if (videoConn.isVideoMirroringSupported) {
-                videoConn.automaticallyAdjustsVideoMirroring = NO;
-                videoConn.videoMirrored = YES;
-            }
-            ACBLog([NSString stringWithFormat:@"videoConn configured: enabled=%d, active=%d", videoConn.isEnabled, videoConn.isActive]);
-        }
-        
-        // 3. Preview Layer
+        // 4. Preview Layer
         self.previewLayer = [AVCaptureVideoPreviewLayer layerWithSession:self.captureSession];
         self.previewLayer.videoGravity = AVLayerVideoGravityResizeAspectFill;
         
@@ -318,7 +306,6 @@ static UIImage * _Nullable ImageFromPixelBuffer(CVPixelBufferRef pixelBuffer) {
         CVImageBufferRef imageBuffer = CMSampleBufferGetImageBuffer(sampleBuffer);
         if (!imageBuffer) return;
         
-        // 1. Immediately cache the latest frame for instant shutter capture (<0.01ms)
         @synchronized (self) {
             if (_latestPixelBuffer) {
                 CVPixelBufferRelease(_latestPixelBuffer);
@@ -334,28 +321,6 @@ static UIImage * _Nullable ImageFromPixelBuffer(CVPixelBufferRef pixelBuffer) {
             ACBLog([NSString stringWithFormat:@"Video buffer #%ld cached: %zux%zu, format='%.4s'",
                     (long)self.sampleBufferCounter, w, h, (const char*)&pixelFormat]);
         }
-        
-        // 2. Vision Fallback: If hardware ISP hasn't detected a face in the last 0.3s, run Vision
-        NSTimeInterval now = [NSDate timeIntervalSinceReferenceDate];
-        if (now - self.lastISPFaceTime > 0.3 && !self.isProcessingVision) {
-            self.isProcessingVision = YES;
-            CVPixelBufferRef bufferForVision = CVPixelBufferRetain(imageBuffer);
-            dispatch_async(self.visionQueue, ^{
-                @autoreleasepool {
-                    [self processVisionFaceDetectionOnPixelBuffer:bufferForVision];
-                    CVPixelBufferRelease(bufferForVision);
-                    self.isProcessingVision = NO;
-                }
-            });
-        }
-    }
-}
-
-- (void)captureOutput:(AVCaptureOutput *)output didDropSampleBuffer:(CMSampleBufferRef)sampleBuffer fromConnection:(AVCaptureConnection *)connection {
-    static NSInteger dropCount = 0;
-    dropCount++;
-    if (dropCount <= 3 || dropCount % 60 == 0) {
-        ACBLog([NSString stringWithFormat:@"Video buffer DROPPED (total=%ld)", (long)dropCount]);
     }
 }
 
@@ -363,7 +328,6 @@ static UIImage * _Nullable ImageFromPixelBuffer(CVPixelBufferRef pixelBuffer) {
 
 - (void)captureOutput:(AVCaptureOutput *)output didOutputMetadataObjects:(NSArray<__kindof AVMetadataObject *> *)metadataObjects fromConnection:(AVCaptureConnection *)connection {
     self.frameCounter++;
-    self.lastISPFaceTime = [NSDate timeIntervalSinceReferenceDate];
     
     NSMutableArray<AVMetadataFaceObject *> *faces = [NSMutableArray array];
     for (AVMetadataObject *obj in metadataObjects) {
@@ -373,78 +337,6 @@ static UIImage * _Nullable ImageFromPixelBuffer(CVPixelBufferRef pixelBuffer) {
     }
     
     [self evaluateFacesFromMetadata:faces];
-}
-
-#pragma mark - Apple Vision.framework Face Detection (Fallback)
-
-- (void)processVisionFaceDetectionOnPixelBuffer:(CVPixelBufferRef)pixelBuffer {
-    self.frameCounter++;
-    
-    VNDetectFaceRectanglesRequest *faceRequest = [[VNDetectFaceRectanglesRequest alloc] init];
-    VNImageRequestHandler *handler = [[VNImageRequestHandler alloc] initWithCVPixelBuffer:pixelBuffer
-                                                                               orientation:kCGImagePropertyOrientationLeftMirrored
-                                                                                   options:@{}];
-    NSError *error = nil;
-    [handler performRequests:@[faceRequest] error:&error];
-    
-    if (error || !faceRequest.results || faceRequest.results.count == 0) {
-        [self reportStatus:ACBFaceStatusNoFace
-                   message:@"Vui lòng đảm bảo khuôn mặt nằm trong khung, nhìn thẳng vào camera và chụp ảnh"
-                faceBounds:CGRectZero
-                      diag:@"Vision: 0 faces"];
-        return;
-    }
-    
-    if (faceRequest.results.count > 1) {
-        [self reportStatus:ACBFaceStatusMultipleFaces
-                   message:@"Vui lòng chỉ 1 người trong khung hình"
-                faceBounds:CGRectZero
-                      diag:[NSString stringWithFormat:@"Vision: %lu faces (Nhiều mặt)", (unsigned long)faceRequest.results.count]];
-        return;
-    }
-    
-    VNFaceObservation *face = faceRequest.results.firstObject;
-    CGRect box = face.boundingBox;
-    
-    CGFloat normX = box.origin.x;
-    CGFloat normY = 1.0 - (box.origin.y + box.size.height);
-    CGFloat normW = box.size.width;
-    CGFloat normH = box.size.height;
-    
-    size_t bufW = CVPixelBufferGetWidth(pixelBuffer);
-    size_t bufH = CVPixelBufferGetHeight(pixelBuffer);
-    CGFloat videoW = (CGFloat)bufH;
-    CGFloat videoH = (CGFloat)bufW;
-    
-    CGFloat viewW = self.viewFinderBounds.size.width;
-    CGFloat viewH = self.viewFinderBounds.size.height;
-    if (viewW <= 0 || viewH <= 0) {
-        viewW = self.previewLayer.bounds.size.width;
-        viewH = self.previewLayer.bounds.size.height;
-    }
-    if (viewW <= 0 || viewH <= 0) {
-        viewW = [UIScreen mainScreen].bounds.size.width * 0.892;
-        viewH = viewW * (4.0 / 3.0);
-    }
-    
-    CGFloat scale = MAX(viewW / videoW, viewH / videoH);
-    CGFloat renderedW = videoW * scale;
-    CGFloat renderedH = videoH * scale;
-    CGFloat offsetX = (viewW - renderedW) / 2.0;
-    CGFloat offsetY = (viewH - renderedH) / 2.0;
-    
-    CGRect screenFaceRect = CGRectMake(offsetX + normX * renderedW,
-                                       offsetY + normY * renderedH,
-                                       normW * renderedW,
-                                       normH * renderedH);
-    
-    CGFloat rollDeg = face.roll ? ([face.roll doubleValue] * 180.0 / M_PI) : 0.0;
-    CGFloat yawDeg = face.yaw ? ([face.yaw doubleValue] * 180.0 / M_PI) : 0.0;
-    
-    [self runACBClassificationWithFaceRect:screenFaceRect
-                                   rollDeg:rollDeg
-                                    yawDeg:yawDeg
-                                    source:@"Vision"];
 }
 
 #pragma mark - Classification Math (100% Parity with ACB NEW classifyNativeFace)
@@ -590,24 +482,23 @@ static UIImage * _Nullable ImageFromPixelBuffer(CVPixelBufferRef pixelBuffer) {
     });
 }
 
-#pragma mark - Capture Frame for Round (Instant Video Frame Buffer from RAM)
+#pragma mark - Capture Frame for Round (Hybrid: RAM Buffer + Direct AVCaptureStillImageOutput)
 
 - (void)captureStillFrameWithCompletion:(void(^)(UIImage * _Nullable image))completion {
-    ACBLog(@"captureStillFrameWithCompletion requested - grabbing live video buffer from RAM");
+    ACBLog(@"captureStillFrameWithCompletion requested");
     
-    // Fast path: Check if live video buffer is already cached (Instant, <2ms)
+    // Priority 1: Instant RAM buffer if available (<2ms)
     CVPixelBufferRef pixelBuffer = NULL;
     @synchronized (self) {
         if (self->_latestPixelBuffer) {
             pixelBuffer = CVPixelBufferRetain(self->_latestPixelBuffer);
         }
     }
-    
     if (pixelBuffer) {
         UIImage *finalImage = ImageFromPixelBuffer(pixelBuffer);
         CVPixelBufferRelease(pixelBuffer);
         if (finalImage && finalImage.size.width > 50 && finalImage.size.height > 50) {
-            ACBLog([NSString stringWithFormat:@"captureStillFrame SUCCESS (Instant RAM Buffer): %.0fx%.0f", finalImage.size.width, finalImage.size.height]);
+            ACBLog([NSString stringWithFormat:@"captureStillFrame SUCCESS (RAM buffer): %.0fx%.0f", finalImage.size.width, finalImage.size.height]);
             if (completion) {
                 dispatch_async(dispatch_get_main_queue(), ^{
                     completion(finalImage);
@@ -617,41 +508,56 @@ static UIImage * _Nullable ImageFromPixelBuffer(CVPixelBufferRef pixelBuffer) {
         }
     }
     
-    // If buffer not ready yet (e.g. within first 300ms of launch), wait briefly up to 1.5s
-    ACBLog(@"VideoBuffer not cached yet, waiting for first incoming frame...");
-    __block int attempts = 0;
-    NSTimer *pollTimer = [NSTimer scheduledTimerWithTimeInterval:0.05 repeats:YES block:^(NSTimer * _Nonnull timer) {
-        attempts++;
-        CVPixelBufferRef pb = NULL;
-        @synchronized (self) {
-            if (self->_latestPixelBuffer) {
-                pb = CVPixelBufferRetain(self->_latestPixelBuffer);
-            }
+    // Priority 2: Direct AVCaptureStillImageOutput (Classic direct capture - 100% reliable on iOS 16 rootless)
+    AVCaptureConnection *videoConn = [self.stillImageOutput connectionWithMediaType:AVMediaTypeVideo];
+    if (videoConn) {
+        if (videoConn.isVideoOrientationSupported) {
+            videoConn.videoOrientation = AVCaptureVideoOrientationPortrait;
         }
-        if (pb) {
-            [timer invalidate];
-            UIImage *img = ImageFromPixelBuffer(pb);
-            CVPixelBufferRelease(pb);
-            if (img && img.size.width > 50 && img.size.height > 50) {
-                ACBLog([NSString stringWithFormat:@"captureStillFrame SUCCESS (Polled %d attempts): %.0fx%.0f", attempts, img.size.width, img.size.height]);
-                if (completion) {
-                    dispatch_async(dispatch_get_main_queue(), ^{
-                        completion(img);
-                    });
+        if (videoConn.isVideoMirroringSupported) {
+            videoConn.automaticallyAdjustsVideoMirroring = NO;
+            videoConn.videoMirrored = YES;
+        }
+        
+        ACBLog(@"Capturing via stillImageOutput direct connection...");
+        [self.stillImageOutput captureStillImageAsynchronouslyFromConnection:videoConn completionHandler:^(CMSampleBufferRef  _Nullable imageDataSampleBuffer, NSError * _Nullable error) {
+            if (error) {
+                ACBLog([NSString stringWithFormat:@"stillImageOutput error: %@", error]);
+            }
+            if (imageDataSampleBuffer) {
+                NSData *jpegData = [AVCaptureStillImageOutput jpegStillImageNSDataRepresentation:imageDataSampleBuffer];
+                if (jpegData && jpegData.length > 0) {
+                    UIImage *img = [UIImage imageWithData:jpegData];
+                    if (img) {
+                        img = NormalizedImage(img);
+                        ACBLog([NSString stringWithFormat:@"captureStillFrame SUCCESS (stillImageOutput): %.0fx%.0f (%lu bytes)",
+                                img.size.width, img.size.height, (unsigned long)jpegData.length]);
+                        if (completion) {
+                            dispatch_async(dispatch_get_main_queue(), ^{
+                                completion(img);
+                            });
+                        }
+                        return;
+                    }
                 }
-                return;
             }
-        }
-        if (attempts >= 30) { // 1.5s timeout
-            [timer invalidate];
-            ACBLog(@"captureStillFrame FAILED after 1.5s poll");
+            
+            ACBLog(@"stillImageOutput returned no image data");
             if (completion) {
                 dispatch_async(dispatch_get_main_queue(), ^{
                     completion(nil);
                 });
             }
-        }
-    }];
+        }];
+        return;
+    }
+    
+    ACBLog(@"captureStillFrame: stillImageOutput connection not found");
+    if (completion) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            completion(nil);
+        });
+    }
 }
 
 @end
