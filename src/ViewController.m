@@ -653,7 +653,7 @@ static NSString * const kRegisterPhaseInstructions[] = {
                 return;
             } else if (capturedIndex >= 20) {
                 // Xong toàn bộ 20 ảnh CK -> bắt đầu upload!
-                self.isCapturingRound = NO;
+                self.isCapturingRound = YES; // Khóa capture trong khi upload
                 self.guideLabel.text = @"Chụp thành công, đang tải lên...";
                 [self startUploadFlow];
                 return;
@@ -680,7 +680,7 @@ static NSString * const kRegisterPhaseInstructions[] = {
             [self updateDotsIndicator];
             
             if (capturedIndex >= self.totalRounds) {
-                self.isCapturingRound = NO;
+                self.isCapturingRound = YES; // Khóa capture trong khi upload
                 self.guideLabel.text = @"Chụp thành công, đang tải lên...";
                 [self startUploadFlow];
                 return;
